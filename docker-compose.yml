@@ -1,0 +1,9 @@
+services:
+  dinov3:
+    build: .
+    container_name: weed-dinov3
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    stdin_open: true
+    tty: true
