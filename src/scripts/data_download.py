@@ -217,15 +217,24 @@ def collect_samples(dataset_dir: Path) -> List[Tuple[Path, Path]]:
     return samples
 
 
+CLASS_ALIASES: Dict[str, str] = {
+    "jakobskreuzkraut": "ragwort",
+    "starzec": "ragwort",
+}
+
+
 def build_global_classes(
-    per_dataset_names: Dict[str, List[str]], exclude: List[str]
+    per_dataset_names: Dict[str, List[str]],
+    exclude: List[str],
+    aliases: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[str], Dict[str, Dict[int, Optional[int]]]]:
     """
     Łączy listy klas wszystkich zbiorów w jedną, globalną listę (bez duplikatów,
-    porównywanych bez rozróżniania wielkości liter) i buduje mapowanie
-    lokalny_indeks -> globalny_indeks dla każdego zbioru.
+    porównywanych bez rozróżniania wielkości liter, z uwzględnieniem synonimów)
+    i buduje mapowanie lokalny_indeks -> globalny_indeks dla każdego zbioru.
     Wartość None oznacza "pomiń tę klasę" (była na liście --exclude-classes).
     """
+    alias_map = aliases if aliases is not None else CLASS_ALIASES
     exclude_lower = {c.lower() for c in exclude}
     global_names: List[str] = []
     global_lookup: Dict[str, int] = {}
@@ -234,13 +243,14 @@ def build_global_classes(
     for key, names in per_dataset_names.items():
         mapping[key] = {}
         for local_idx, name in enumerate(names):
-            if name.lower() in exclude_lower:
+            canonical = alias_map.get(name.lower(), name)
+            if canonical.lower() in exclude_lower or name.lower() in exclude_lower:
                 mapping[key][local_idx] = None
                 continue
-            lookup_key = name.lower()
+            lookup_key = canonical.lower()
             if lookup_key not in global_lookup:
                 global_lookup[lookup_key] = len(global_names)
-                global_names.append(name)
+                global_names.append(canonical)
             mapping[key][local_idx] = global_lookup[lookup_key]
 
     return global_names, mapping
@@ -294,6 +304,7 @@ def write_split(
 
 def write_data_yaml(output_dir: Path, class_names: List[str]) -> None:
     content = {
+        "path": str(output_dir.resolve()).replace("\\", "/"),
         "train": "train/images",
         "val": "test/images",
         "test": "test/images",
