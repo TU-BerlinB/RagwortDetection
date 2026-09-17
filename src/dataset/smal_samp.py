@@ -1,9 +1,10 @@
 import pandas as pd
+import webbrowser
 
 df = pd.read_csv("sample_100.csv")
 
-print(df.head())
-print(len(df))
+for i, url in enumerate(df["identifier"], start=1):
+    print(f"Opening {i}/{len(df)}")
+    webbrowser.open(url)
 
-for url in df["identifier"].head():
-    print(url)
+    input("Press Enter for next image...")
