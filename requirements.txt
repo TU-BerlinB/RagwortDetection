@@ -10,3 +10,4 @@ umap-learn
 matplotlib
 roboflow
 pyyaml
+tensorboard
