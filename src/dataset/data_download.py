@@ -1,35 +1,39 @@
 import pandas as pd
 import requests
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
-# Load sample file
+# Load data
 df = pd.read_csv("sample_10000.csv")
 
-# Create images folder if it doesn't exist
+# Images folder
 out_dir = Path("images")
 out_dir.mkdir(exist_ok=True)
 
-# Only download 10 images for testing
-N = 10
-
-for idx, row in df.head(N).iterrows():
-
-    url = row["identifier"]
-
+def download_image(row):
     try:
-        response = requests.get(url, timeout=20)
+        url = row["identifier"]
+        gbif_id = row["gbifID"]
+
+        response = requests.get(url, timeout=10)
 
         if response.status_code == 200:
-
-            filename = out_dir / f"{idx}.jpg"
+            filename = out_dir / f"{gbif_id}.jpg"
 
             with open(filename, "wb") as f:
                 f.write(response.content)
 
-            print(f"Downloaded: {filename}")
+            return f"Downloaded {gbif_id}"
 
-        else:
-            print(f"Failed ({response.status_code}): {url}")
+    except Exception:
+        return None
 
-    except Exception as e:
-        print(f"Error: {e}")
+# Download first 10000 rows
+rows = [row for _, row in df.head(10000).iterrows()]
+
+with ThreadPoolExecutor(max_workers=20) as executor:
+    for result in executor.map(download_image, rows):
+        if result:
+            print(result)
+
+print("Done!")
