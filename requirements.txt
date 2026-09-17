@@ -4,5 +4,9 @@ transformers
 huggingface_hub
 pillow
 numpy
+tqdm
+scikit-learn 
+umap-learn 
+matplotlib
 roboflow
 pyyaml
