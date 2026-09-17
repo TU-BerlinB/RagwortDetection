@@ -4,3 +4,4 @@ transformers
 huggingface_hub
 pillow
 numpy
+tqdm
