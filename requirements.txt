@@ -4,3 +4,5 @@ transformers
 huggingface_hub
 pillow
 numpy
+roboflow
+pyyaml
