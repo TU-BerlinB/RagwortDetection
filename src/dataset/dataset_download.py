@@ -29,7 +29,7 @@ def download_image(row):
         return None
 
 # Download first 10000 rows
-rows = [row for _, row in df.head(10000).iterrows()]
+rows = [row for _, row in df.head(10).iterrows()]
 
 with ThreadPoolExecutor(max_workers=20) as executor:
     for result in executor.map(download_image, rows):
