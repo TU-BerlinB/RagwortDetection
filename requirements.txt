@@ -10,3 +10,6 @@ umap-learn
 matplotlib
 roboflow
 pyyaml
+pandas
+cv2
+matplotlib.pyplot
