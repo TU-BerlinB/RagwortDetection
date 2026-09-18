@@ -47,7 +47,7 @@ def plot_embeddings(embeddings, labels, title):
     plt.legend()
     plt.grid(alpha=0.2)
 
-    plt.show()
+    plt.savefig("test.png")
 
 
 def visualize_pca(embeddings, labels):
