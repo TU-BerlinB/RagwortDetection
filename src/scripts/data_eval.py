@@ -264,6 +264,7 @@ def trenuj_i_ewaluuj(
     epochs: int = 5,
     imgsz: int = 416,
     batch: int = 16,
+    workers: int =2,
     skip_train: bool = False,
     weights_path: Optional[str] = None,
 ):
@@ -291,6 +292,7 @@ def trenuj_i_ewaluuj(
             epochs=epochs,
             imgsz=imgsz,
             batch=batch,
+            workers=workers,
             name="ragwort_yolov8",
             exist_ok=True,
             verbose=True,
