@@ -11,3 +11,6 @@ matplotlib
 roboflow
 pyyaml
 tensorboard
+faster-coco-eval
+scipy
+calflops

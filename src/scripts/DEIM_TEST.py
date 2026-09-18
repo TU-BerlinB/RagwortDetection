@@ -44,7 +44,7 @@ def main():
     print(f"Input shape: {x.shape}")
 
     model = DINOv3STAs(
-        name="dinov3",
+        name="dinov3_vits16",
         weights_path=None,
         interaction_indexes=[2, 5, 8],
         finetune=False,
