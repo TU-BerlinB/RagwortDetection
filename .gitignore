@@ -68,3 +68,5 @@ outputs/
 #photos
 data/
 metadata/
+data/
+*.jpg

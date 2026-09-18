@@ -10,12 +10,12 @@ from models.dinov3 import DINOv3
 
 
 # Paths
-DATA_DIR = Path("data")
+DATA_DIR = Path("data/dino_dataset")
 OUTPUT_PATH = Path("outputs/embeddings.npz")
 
 CLASSES = {
     "ragwort": 0,
-    "other_weed": 1,
+    "others": 1,
 }
 
 
