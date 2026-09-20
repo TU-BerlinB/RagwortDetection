@@ -1,10 +1,13 @@
 services:
-  dinov3:
+  yolo:
     build: .
-    container_name: weed-dinov3
+    container_name: yolo
     working_dir: /workspace
+    shm_size: '8gb'
+    ipc: host
     volumes:
     - .:/workspace
     - ../DEIMv2:/DEIMv2
     stdin_open: true
     tty: true
+    gpus: all

@@ -44,6 +44,10 @@ htmlcov/
 
 # ML / experiment outputs
 
+data/
+bledy_False_Positives/
+bledy_False_Negatives/
+
 wandb/
 runs/
 logs/
