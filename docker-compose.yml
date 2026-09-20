@@ -8,6 +8,7 @@ services:
     volumes:
     - .:/workspace
     - ../DEIMv2:/DEIMv2
+    shm_size: '16gb'
     stdin_open: true
     tty: true
     gpus: all
