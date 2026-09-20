@@ -68,3 +68,9 @@ Thumbs.db
 *.log
 
 outputs/
+
+#photos
+data/
+metadata/
+data/
+*.jpg

@@ -6,7 +6,8 @@ services:
     shm_size: '8gb'
     ipc: host
     volumes:
-      - .:/workspace
+    - .:/workspace
+    - ../DEIMv2:/DEIMv2
     stdin_open: true
     tty: true
     gpus: all

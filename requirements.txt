@@ -10,4 +10,9 @@ umap-learn
 matplotlib
 roboflow
 pyyaml
+tensorboard
+faster-coco-eval
+scipy
+calflops
+pandas
 ultralytics
