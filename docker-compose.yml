@@ -1,14 +1,26 @@
 services:
+
   yolo:
     build: .
     container_name: yolo
     working_dir: /workspace
-    shm_size: '8gb'
+    shm_size: '16gb'
     ipc: host
     volumes:
-    - .:/workspace
-    - ../DEIMv2:/DEIMv2
+      - .:/workspace
+    stdin_open: true
+    tty: true
+    gpus: all
+
+  deim:
+    build: .
+    container_name: deim
+    working_dir: /workspace
     shm_size: '16gb'
+    ipc: host
+    volumes:
+      - .:/workspace
+      - ../DEIMv2:/DEIMv2
     stdin_open: true
     tty: true
     gpus: all
