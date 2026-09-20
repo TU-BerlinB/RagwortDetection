@@ -1,53 +1,50 @@
 """
-Wybor reprezentatywnych zdjec metoda facility location (greedy k-center) na embeddingach DINO.
+Dwustopniowy wybor reprezentatywnych zdjec metoda facility location (greedy k-center)
+na embeddingach DINO, ze zbioru GBIF sample_10000.csv (kolumna 'identifier' = URL zdjecia).
 
-KOMENDY - caly ten blok mozna wkleic do konsoli w /workspace, linie z # sa ignorowane:
+10000 -> 2000 -> 200. Wyniki jako dwa pliki CSV w folderze afterfacilitylocation/.
 
-# 1. sam skan danych, bez modelu (szybki test, ze sciezki sie zgadzaja):
+KOMENDY - caly blok mozna wkleic do konsoli w /workspace, linie z # sa ignorowane:
+
+# 1. sam skan CSV, bez pobierania i bez modelu:
 python src/scripts/select_representative.py --dry-run
 
-# 2. szybki test na 40 zdjeciach (sprawdza, czy model sie w ogole laduje):
-python src/scripts/select_representative.py --limit 40 --n-select 10
+# 2. szybki test na 40 zdjeciach (sprawdza pobieranie i model):
+python src/scripts/select_representative.py --limit 40 --n-first 20 --n-second 5
 
-# 3. wlasciwy przebieg na data/combined_dataset/train:
-python src/scripts/select_representative.py --n-select 150
+# 3. wlasciwy przebieg 10000 -> 2000 -> 200:
+python src/scripts/select_representative.py
 
-# 4. train + test + 1000 negatywow z data/plants, po rowno miedzy klasy:
-python src/scripts/select_representative.py --split all --extra-dir data/plants --n-select 200 --equal-classes
+# 4. to samo, ale wiecej watkow pobierania (szybciej, gdy lacze wyrabia):
+python src/scripts/select_representative.py --workers 32
 
-# 5. to samo + kopie wybranych zdjec do outputs/selected_images/:
-python src/scripts/select_representative.py --n-select 150 --copy-images
+# 5. ponowne liczenie embeddingow od zera (ignoruje cache):
+python src/scripts/select_representative.py --recompute
 
-# 6. wymuszenie przeliczenia embeddingow (domyslnie brane z cache'u):
-python src/scripts/select_representative.py --n-select 150 --recompute
+MODEL: domyslnie probuje DINOv3, a gdy repo jest zamkniete (401 / gated), przechodzi
+na publiczne facebook/dinov2-small. Wymuszenie konkretnego modelu:
+python src/scripts/select_representative.py --model facebook/dinov2-base
 
-MODEL: domyslnie skrypt probuje DINOv3, a gdy repo jest zamkniete (blad 401 / gated repo),
-automatycznie przechodzi na publiczne facebook/dinov2-small. Zeby wymusic konkretny model:
-python src/scripts/select_representative.py --model facebook/dinov2-base --n-select 150
+WEJSCIE:  sample_10000.csv  (kolumny GBIF: gbifID, identifier, license, rightsHolder, ...)
+WYJSCIE:  afterfacilitylocation/selected_2000.csv    pierwszy etap
+          afterfacilitylocation/selected_200.csv     drugi etap (podzbior tych 2000)
+          afterfacilitylocation/embeddings.npz       cache embeddingow
+          afterfacilitylocation/thumbs/              pobrane zdjecia (male kopie)
+          afterfacilitylocation/failed.csv           URL-e, ktorych nie udalo sie pobrac
 
-# DOSTEP DO DINOv3 (opcjonalny) - najpierw kliknij "Agree and access repository" na
-# https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m , potem w kontenerze:
-pip install -U huggingface_hub
-hf auth login          # starsze wersje: huggingface-cli login
-# albo bez logowania:  export HF_TOKEN=hf_twoj_token
-
-WEJSCIE:  data/combined_dataset/<split>/images + /labels   (nazwy klas z data.yaml)
-WYJSCIE:  outputs/embeddings_combined_<split>.npz          cache embeddingow
-          outputs/selected_representative.csv              lista zdjec do adnotacji
-          outputs/selection_summary.json                   parametry + statystyki
-          outputs/selected_images/<klasa>/                 tylko z --copy-images
+UWAGA: folder afterfacilitylocation/ potrafi urosnac do kilkuset MB - dopisz go do .gitignore.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import json
-import shutil
+import hashlib
+import io
 import sys
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 
@@ -63,14 +60,11 @@ try:
 except Exception:
     pass
 
-DEFAULT_DATA_DIR = REPO_ROOT / "data" / "combined_dataset"
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "outputs"
+DEFAULT_INPUT = REPO_ROOT / "sample_10000.csv"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "afterfacilitylocation"
 
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
-RAGWORT_SYNONYMS = {"ragwort", "jakobskreuzkraut", "starzec", "senecio"}
-
-CLASS_RAGWORT = "ragwort"
-CLASS_OTHERS = "others"
+URL_COLUMN = "identifier"
+ID_COLUMN = "gbifID"
 
 MODEL_CANDIDATES = [
     "facebook/dinov3-vits16-pretrain-lvd1689m",
@@ -85,98 +79,124 @@ HF_HINT = (
     "     (albo: export HF_TOKEN=hf_twoj_token)"
 )
 
-
-@dataclass
-class Sample:
-    path: Path
-    label: str
-
-    @property
-    def rel_path(self) -> str:
-        try:
-            return self.path.relative_to(REPO_ROOT).as_posix()
-        except ValueError:
-            return self.path.as_posix()
+USER_AGENT = "RagwortDetection/1.0 (research project; contact via GitHub TU-BerlinB/RagwortDetection)"
 
 
-def load_ragwort_class_ids(data_dir: Path) -> Set[int]:
-    yaml_path = data_dir / "data.yaml"
-    names: List[str] = []
-
-    if yaml_path.exists():
-        try:
-            import yaml
-
-            with open(yaml_path, "r", encoding="utf-8") as fh:
-                data = yaml.safe_load(fh) or {}
-            raw = data.get("names", [])
-            if isinstance(raw, dict):
-                raw = [raw[k] for k in sorted(raw, key=int)]
-            names = [str(n) for n in raw]
-        except ImportError:
-            print("[uwaga] brak pyyaml -> zakladam, ze klasa 0 to starzec")
-        except Exception as exc:
-            print(f"[uwaga] nie udalo sie wczytac {yaml_path}: {exc}")
-
-    ids = {i for i, n in enumerate(names) if n.strip().lower() in RAGWORT_SYNONYMS}
-    return ids or {0}
+def download_candidates(url: str, prefer_small: bool) -> List[str]:
+    """URL-e do sprobowania, od najlzejszego. iNaturalist trzyma warianty rozmiarowe
+    pod ta sama sciezka, a 'original.jpg' potrafi wazyc kilka MB."""
+    if prefer_small and "inaturalist-open-data" in url and url.endswith("/original.jpg"):
+        return [url.replace("/original.jpg", "/medium.jpg"), url]
+    return [url]
 
 
-def label_of_image(label_path: Path, ragwort_ids: Set[int]) -> str:
-    if not label_path.exists():
-        return CLASS_OTHERS
+def read_rows(csv_path: Path, limit: int) -> Tuple[List[dict], List[str]]:
+    if not csv_path.exists():
+        raise SystemExit(f"Blad: nie ma pliku {csv_path}. Podaj inny przez --input.")
 
-    with open(label_path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            parts = line.split()
-            if not parts:
-                continue
-            try:
-                if int(float(parts[0])) in ragwort_ids:
-                    return CLASS_RAGWORT
-            except ValueError:
-                continue
-    return CLASS_OTHERS
+    with open(csv_path, "r", encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        fieldnames = list(reader.fieldnames or [])
+        raw = list(reader)
 
+    if URL_COLUMN not in fieldnames:
+        raise SystemExit(f"Blad: w {csv_path.name} nie ma kolumny '{URL_COLUMN}'. Kolumny: {fieldnames}")
 
-def collect_samples(data_dir: Path, splits: Sequence[str]) -> List[Sample]:
-    ragwort_ids = load_ragwort_class_ids(data_dir)
-    samples: List[Sample] = []
+    rows: List[dict] = []
+    seen = set()
+    empty = 0
+    dupes = 0
 
-    for split in splits:
-        images_dir = data_dir / split / "images"
-        labels_dir = data_dir / split / "labels"
-
-        if not images_dir.exists():
-            print(f"[uwaga] pomijam '{split}' - brak {images_dir}")
+    for r in raw:
+        url = (r.get(URL_COLUMN) or "").strip()
+        if not url:
+            empty += 1
             continue
+        if url in seen:
+            dupes += 1
+            continue
+        seen.add(url)
+        rows.append(r)
 
-        paths = sorted(p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES)
-        for img in paths:
-            samples.append(Sample(img, label_of_image(labels_dir / (img.stem + ".txt"), ragwort_ids)))
-        print(f"[skan] {split}: {len(paths)} zdjec (ID klas starca: {sorted(ragwort_ids)})")
+    print(f"[csv] {csv_path.name}: {len(raw)} wierszy -> {len(rows)} unikalnych URL (puste: {empty}, duplikaty: {dupes})")
 
-    return samples
+    if limit > 0 and limit < len(rows):
+        step = len(rows) / limit
+        rows = [rows[min(len(rows) - 1, int(i * step))] for i in range(limit)]
+        print(f"[limit] biore {len(rows)} zdjec")
 
-
-def collect_extra_dir(extra_dir: Path, label: str) -> List[Sample]:
-    if not extra_dir.exists():
-        print(f"[uwaga] pomijam --extra-dir - brak {extra_dir}")
-        return []
-
-    paths = sorted(p for p in extra_dir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES)
-    print(f"[skan] {extra_dir}: {len(paths)} zdjec jako '{label}'")
-    return [Sample(p, label) for p in paths]
+    return rows, fieldnames
 
 
-def subsample(samples: List[Sample], limit: int) -> List[Sample]:
-    if limit <= 0 or limit >= len(samples):
-        return samples
+def thumb_path(cache_dir: Path, url: str) -> Path:
+    return cache_dir / (hashlib.sha1(url.encode("utf-8")).hexdigest() + ".jpg")
 
-    step = len(samples) / limit
-    picked = [samples[min(len(samples) - 1, int(i * step))] for i in range(limit)]
-    print(f"[limit] biore {len(picked)} z {len(samples)} zdjec (co ~{step:.1f}-te)")
-    return picked
+
+def download_missing(
+    rows: List[dict], cache_dir: Path, workers: int, max_side: int, timeout: int, prefer_small: bool
+) -> Dict[str, str]:
+    import requests
+    from PIL import Image
+    from tqdm import tqdm
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    todo = [r for r in rows if not thumb_path(cache_dir, r[URL_COLUMN]).exists()]
+    have = len(rows) - len(todo)
+    print(f"[pobieranie] w cache: {have}, do pobrania: {len(todo)}")
+
+    if not todo:
+        return {}
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": USER_AGENT})
+    failures: Dict[str, str] = {}
+
+    def fetch(row: dict) -> None:
+        url = row[URL_COLUMN]
+        dest = thumb_path(cache_dir, url)
+        last = ""
+        for candidate in download_candidates(url, prefer_small):
+            try:
+                resp = session.get(candidate, timeout=timeout)
+                resp.raise_for_status()
+                img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                img.thumbnail((max_side, max_side))
+                img.save(dest, "JPEG", quality=90)
+                return
+            except Exception as exc:
+                last = f"{type(exc).__name__}: {str(exc)[:120]}"
+        failures[url] = last
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(tqdm(pool.map(fetch, todo), total=len(todo), desc="Pobieranie"))
+
+    print(f"[pobieranie] nieudane: {len(failures)}")
+    return failures
+
+
+def load_cache(cache_path: Path, recompute: bool) -> Tuple[Dict[str, np.ndarray], str]:
+    if recompute or not cache_path.exists():
+        return {}, ""
+
+    data = np.load(cache_path, allow_pickle=False)
+    urls = data["urls"]
+    vectors = data["embeddings"]
+    model = str(data["model"]) if "model" in data else ""
+    print(f"[cache] {len(urls)} embeddingow z {cache_path} (model: {model or '?'})")
+    return {str(u): v for u, v in zip(urls, vectors)}, model
+
+
+def save_cache(cache_path: Path, mapping: Dict[str, np.ndarray], model: str) -> None:
+    if not mapping:
+        return
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    urls = list(mapping)
+    np.savez(
+        cache_path,
+        urls=np.array(urls),
+        embeddings=np.stack([mapping[u] for u in urls]).astype(np.float32),
+        model=np.array(model),
+    )
 
 
 def load_backbone(model_name: str | None):
@@ -199,58 +219,60 @@ def load_backbone(model_name: str | None):
     raise SystemExit(f"Blad: nie udalo sie zaladowac zadnego modelu. Ostatni blad: {last_error}")
 
 
-def compute_embeddings(samples: List[Sample], batch_size: int, model_name: str | None) -> Tuple[np.ndarray, str]:
+def embed_missing(
+    rows: List[dict],
+    cache_dir: Path,
+    cache_path: Path,
+    mapping: Dict[str, np.ndarray],
+    model_name: str | None,
+    batch_size: int,
+    save_every: int,
+) -> str:
     import torch
     from PIL import Image
     from tqdm import tqdm
 
+    todo = [r for r in rows if r[URL_COLUMN] not in mapping and thumb_path(cache_dir, r[URL_COLUMN]).exists()]
+    if not todo:
+        print("[embeddingi] wszystko juz policzone")
+        return ""
+
     model, used_name = load_backbone(model_name)
     print(f"[model] uzywam {used_name} na: {model.device}")
 
-    vectors: List[np.ndarray] = []
-    for start in tqdm(range(0, len(samples), batch_size), desc="Embeddingi"):
-        batch = samples[start : start + batch_size]
-        images = [Image.open(s.path).convert("RGB") for s in batch]
+    since_save = 0
+    for start in tqdm(range(0, len(todo), batch_size), desc="Embeddingi"):
+        batch = todo[start : start + batch_size]
+        images = []
+        keep = []
+        for row in batch:
+            try:
+                images.append(Image.open(thumb_path(cache_dir, row[URL_COLUMN])).convert("RGB"))
+                keep.append(row)
+            except Exception:
+                continue
+
+        if not images:
+            continue
 
         with torch.no_grad():
             features = model.extract_features(images)
 
-        vectors.append(features.mean(dim=1).cpu().numpy())
+        pooled = features.mean(dim=1).cpu().numpy().astype(np.float32)
+        for row, vec in zip(keep, pooled):
+            mapping[row[URL_COLUMN]] = vec
+
         for img in images:
             img.close()
 
-    return np.vstack(vectors).astype(np.float32), used_name
+        since_save += len(keep)
+        if save_every > 0 and since_save >= save_every:
+            save_cache(cache_path, mapping, used_name)
+            since_save = 0
 
-
-def load_or_compute_embeddings(
-    samples: List[Sample], cache_path: Path, batch_size: int, recompute: bool, model_name: str | None
-) -> Tuple[np.ndarray, str]:
-    current = np.array([s.rel_path for s in samples])
-
-    if cache_path.exists() and not recompute:
-        cached = np.load(cache_path, allow_pickle=False)
-        cached_model = str(cached["model"]) if "model" in cached else "?"
-        same_files = "paths" in cached and len(cached["paths"]) == len(current) and np.array_equal(cached["paths"], current)
-        same_model = model_name is None or cached_model == model_name
-
-        if same_files and same_model:
-            print(f"[cache] wczytuje embeddingi z {cache_path} (model: {cached_model})")
-            return cached["embeddings"].astype(np.float32), cached_model
-        print("[cache] zmienila sie lista plikow albo model -> liczenie od nowa")
-
-    embeddings, used_name = compute_embeddings(samples, batch_size, model_name)
-
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        cache_path,
-        embeddings=embeddings,
-        paths=current,
-        labels=np.array([s.label for s in samples]),
-        model=np.array(used_name),
-    )
-    print(f"[cache] zapisano {cache_path} (ksztalt: {embeddings.shape})")
-
-    return embeddings, used_name
+    save_cache(cache_path, mapping, used_name)
+    print(f"[cache] zapisano {cache_path} ({len(mapping)} wektorow)")
+    return used_name
 
 
 def prepare_metric_space(embeddings: np.ndarray, metric: str) -> np.ndarray:
@@ -290,167 +312,107 @@ def greedy_k_center(X: np.ndarray, p: int, start: str = "medoid", seed: int = 0)
     return selected, gap_at_pick, radius_after
 
 
-def allocate_per_class(counts: Dict[str, int], n_select: int, equal: bool) -> Dict[str, int]:
-    classes = sorted(counts)
-    total = sum(counts.values())
-    if total == 0:
-        return {c: 0 for c in classes}
+def write_selection(
+    rows: List[dict],
+    fieldnames: List[str],
+    order: List[int],
+    gaps: List[float],
+    radii: List[float],
+    cache_dir: Path,
+    out_path: Path,
+) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    extra = ["pick_order", "gap_at_pick", "radius_after", "thumb_path"]
+    columns = fieldnames + [c for c in extra if c not in fieldnames]
 
-    if equal:
-        base = n_select // len(classes)
-        alloc = {c: min(base, counts[c]) for c in classes}
-    else:
-        alloc = {c: min(counts[c], int(round(n_select * counts[c] / total))) for c in classes}
-
-    while sum(alloc.values()) < n_select and any(alloc[c] < counts[c] for c in classes):
-        alloc[max(classes, key=lambda k: counts[k] - alloc[k])] += 1
-    while sum(alloc.values()) > n_select:
-        alloc[max(classes, key=lambda k: alloc[k])] -= 1
-
-    return alloc
-
-
-def write_csv(rows: List[dict], csv_path: Path) -> None:
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["path", "filename", "label", "pick_order", "gap_at_pick", "radius_after"])
+    with open(out_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=columns, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rows)
+        for pick, (idx, gap, radius) in enumerate(zip(order, gaps, radii), start=1):
+            row = dict(rows[idx])
+            row["pick_order"] = pick
+            row["gap_at_pick"] = "" if gap == float("inf") else round(gap, 6)
+            row["radius_after"] = round(radius, 6)
+            row["thumb_path"] = thumb_path(cache_dir, row[URL_COLUMN]).relative_to(REPO_ROOT).as_posix()
+            writer.writerow(row)
 
-
-def copy_selected(rows: List[dict], target_dir: Path) -> None:
-    for row in rows:
-        dest_dir = target_dir / row["label"]
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO_ROOT / row["path"], dest_dir / f"{row['pick_order']:03d}_{row['filename']}")
-    print(f"[kopie] zdjecia w {target_dir}")
+    print(f"[zapis] {out_path}  ({len(order)} wierszy)")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    parser.add_argument("--split", default="train", choices=["train", "test", "all"])
-    parser.add_argument("--extra-dir", type=Path, default=None, help="dodatkowy plaski folder zdjec, np. data/plants")
-    parser.add_argument("--extra-label", default=CLASS_OTHERS)
-    parser.add_argument("--n-select", type=int, default=150)
-    parser.add_argument("--limit", type=int, default=0, help="uzyj tylko N zdjec z puli (0 = wszystkie)")
-    parser.add_argument("--model", default=None, help="np. facebook/dinov2-small (domyslnie: DINOv3, a gdy gated -> DINOv2)")
-    parser.add_argument("--equal-classes", action="store_true")
+    parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--n-first", type=int, default=2000, help="ile wybrac w pierwszym etapie")
+    parser.add_argument("--n-second", type=int, default=200, help="ile wybrac z wyniku pierwszego etapu")
+    parser.add_argument("--limit", type=int, default=0, help="uzyj tylko N wierszy z CSV (0 = wszystkie)")
+    parser.add_argument("--model", default=None)
     parser.add_argument("--metric", default="cosine", choices=["cosine", "euclidean"])
     parser.add_argument("--start", default="medoid", choices=["medoid", "random"])
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--workers", type=int, default=16, help="watki pobierania zdjec")
+    parser.add_argument("--max-side", type=int, default=256, help="dluzszy bok zapisywanej miniatury")
+    parser.add_argument("--timeout", type=int, default=20)
+    parser.add_argument("--no-prefer-small", dest="prefer_small", action="store_false",
+                        help="pobieraj zawsze oryginalny plik, nawet gdy jest wersja lzejsza")
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--save-every", type=int, default=500, help="co ile zdjec zapisac cache embeddingow")
     parser.add_argument("--recompute", action="store_true")
-    parser.add_argument("--copy-images", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="tylko wczytanie CSV, bez pobierania i modelu")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    splits = ["train", "test"] if args.split == "all" else [args.split]
 
-    print("=== Wybor reprezentatywnych zdjec (facility location / k-center) ===")
-    print(f"Dane: {args.data_dir} (split: {', '.join(splits)})")
+    print("=== Facility location na zbiorze GBIF: 10000 -> 2000 -> 200 ===")
+    rows, fieldnames = read_rows(args.input, args.limit)
 
-    samples = collect_samples(args.data_dir, splits)
-    if args.extra_dir is not None:
-        samples += collect_extra_dir(args.extra_dir, args.extra_label)
-
-    if not samples:
-        raise SystemExit(f"Blad: brak zdjec w {args.data_dir}. Sprawdz, czy istnieje {args.data_dir}/{splits[0]}/images.")
-
-    samples = subsample(samples, args.limit)
-
-    counts: Dict[str, int] = {}
-    for s in samples:
-        counts[s.label] = counts.get(s.label, 0) + 1
-
-    print(f"[pula] {len(samples)} zdjec: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-
-    for label, n in sorted(counts.items()):
-        if n < 50 and args.extra_dir is None and args.limit <= 0:
-            print(f"[uwaga] klasa '{label}' ma tylko {n} zdjec - rozwaz: --extra-dir data/plants --equal-classes")
-
-    alloc = allocate_per_class(counts, args.n_select, args.equal_classes)
-    print("[podzial] do wyboru: " + ", ".join(f"{k}={v}" for k, v in sorted(alloc.items())))
+    if not rows:
+        raise SystemExit("Blad: brak wierszy z URL-em do zdjecia.")
 
     if args.dry_run:
-        print("\n[dry-run] koniec - bez embeddingow i selekcji.")
+        print(f"[dry-run] koniec. Do pobrania byloby {len(rows)} zdjec, etapy: {args.n_first} -> {args.n_second}")
         return
 
-    suffix = f"_limit{args.limit}" if args.limit > 0 else ""
-    cache_name = f"embeddings_combined_{'_'.join(splits)}{suffix}.npz"
-    embeddings, used_model = load_or_compute_embeddings(
-        samples, args.output_dir / cache_name, args.batch_size, args.recompute, args.model
-    )
-    X = prepare_metric_space(embeddings, args.metric)
+    cache_dir = args.output_dir / "thumbs"
+    cache_path = args.output_dir / "embeddings.npz"
 
-    rows: List[dict] = []
-    per_class: Dict[str, dict] = {}
+    failures = download_missing(rows, cache_dir, args.workers, args.max_side, args.timeout, args.prefer_small)
+    if failures:
+        fail_path = args.output_dir / "failed.csv"
+        with open(fail_path, "w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(["url", "error"])
+            writer.writerows(failures.items())
+        print(f"[zapis] {fail_path}  ({len(failures)} nieudanych)")
 
-    for label in sorted(counts):
-        pool_idx = [i for i, s in enumerate(samples) if s.label == label]
-        if alloc[label] <= 0:
-            continue
+    mapping, cached_model = load_cache(cache_path, args.recompute)
+    used_model = embed_missing(
+        rows, cache_dir, cache_path, mapping, args.model, args.batch_size, args.save_every
+    ) or cached_model
 
-        selected, gaps, radii = greedy_k_center(X[pool_idx], alloc[label], args.start, args.seed)
+    usable = [r for r in rows if r[URL_COLUMN] in mapping]
+    if not usable:
+        raise SystemExit("Blad: nie udalo sie policzyc ani jednego embeddingu (sprawdz siec i model).")
 
-        for order, (local, gap, radius) in enumerate(zip(selected, gaps, radii), start=1):
-            sample = samples[pool_idx[local]]
-            rows.append(
-                {
-                    "path": sample.rel_path,
-                    "filename": sample.path.name,
-                    "label": label,
-                    "pick_order": order,
-                    "gap_at_pick": "" if gap == float("inf") else round(gap, 6),
-                    "radius_after": round(radius, 6),
-                }
-            )
+    X = prepare_metric_space(np.stack([mapping[r[URL_COLUMN]] for r in usable]), args.metric)
+    print(f"[pula] {len(usable)} zdjec z embeddingiem (model: {used_model or '?'}), wymiar: {X.shape[1]}")
 
-        per_class[label] = {
-            "pool": counts[label],
-            "selected": len(selected),
-            "start_radius": round(radii[0], 6),
-            "final_radius": round(radii[-1], 6),
-        }
-        print(f"[k-center] {label}: {len(selected)}/{counts[label]}, promien {radii[0]:.4f} -> {radii[-1]:.4f}")
+    first_idx, first_gaps, first_radii = greedy_k_center(X, args.n_first, args.start, args.seed)
+    print(f"[etap 1] {len(first_idx)} z {len(usable)}, promien {first_radii[0]:.4f} -> {first_radii[-1]:.4f}")
 
-    csv_path = args.output_dir / "selected_representative.csv"
-    write_csv(rows, csv_path)
+    X_first = X[first_idx]
+    second_local, second_gaps, second_radii = greedy_k_center(X_first, args.n_second, args.start, args.seed)
+    second_idx = [first_idx[i] for i in second_local]
+    print(f"[etap 2] {len(second_idx)} z {len(first_idx)}, promien {second_radii[0]:.4f} -> {second_radii[-1]:.4f}")
 
-    summary_path = args.output_dir / "selection_summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(summary_path, "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "data_dir": str(args.data_dir),
-                "splits": splits,
-                "extra_dir": str(args.extra_dir) if args.extra_dir else None,
-                "model": used_model,
-                "metric": args.metric,
-                "start": args.start,
-                "limit": args.limit,
-                "n_select_requested": args.n_select,
-                "n_select_actual": len(rows),
-                "pool_counts": counts,
-                "allocation": alloc,
-                "per_class": per_class,
-                "embeddings_cache": str(args.output_dir / cache_name),
-                "csv": str(csv_path),
-            },
-            fh,
-            indent=2,
-            ensure_ascii=False,
-        )
+    write_selection(usable, fieldnames, first_idx, first_gaps, first_radii, cache_dir,
+                    args.output_dir / f"selected_{args.n_first}.csv")
+    write_selection(usable, fieldnames, second_idx, second_gaps, second_radii, cache_dir,
+                    args.output_dir / f"selected_{args.n_second}.csv")
 
-    if args.copy_images:
-        copy_selected(rows, args.output_dir / "selected_images")
-
-    print(f"\nGotowe. Lista do adnotacji: {csv_path}")
-    print(f"Podsumowanie: {summary_path}")
+    print(f"\nGotowe. Pliki w {args.output_dir}")
 
 
 if __name__ == "__main__":
