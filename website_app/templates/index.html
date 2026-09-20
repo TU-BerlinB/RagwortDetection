@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌿 Ragwort Vision Dashboard – Opcja C Pipeline</title>
+    <!-- Bootstrap 5 & Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #0b1120;
+            color: #f1f5f9;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+        .card {
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+        }
+        .nav-tabs .nav-link {
+            color: #94a3b8;
+            font-weight: 600;
+            border: none;
+            padding: 12px 20px;
+        }
+        .nav-tabs .nav-link.active {
+            color: #38bdf8;
+            background-color: #1e293b;
+            border-bottom: 3px solid #38bdf8;
+        }
+        .video-container {
+            position: relative;
+            background-color: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 2px solid #38bdf8;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+        }
+        .video-container img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .badge-live {
+            position: absolute;
+            top: 14px;
+            left: 14px;
+            background: rgba(239, 68, 68, 0.9);
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.4; }
+            100% { opacity: 1; }
+        }
+        .stat-card {
+            padding: 14px;
+            border-radius: 10px;
+            background: #182234;
+            border-left: 4px solid #38bdf8;
+        }
+        .stat-val {
+            font-size: 1.8rem;
+            font-weight: 700;
+        }
+        .table-dark {
+            --bs-table-bg: #1e293b;
+            --bs-table-border-color: #334155;
+        }
+        .organ-badge-flower {
+            background-color: #ffd700;
+            color: #000;
+            font-weight: bold;
+        }
+        .organ-badge-leaf {
+            background-color: #22c55e;
+            color: #000;
+            font-weight: bold;
+        }
+        .organ-badge-stem {
+            background-color: #a0522d;
+            color: #fff;
+            font-weight: bold;
+        }
+        .code-box {
+            background-color: #090d16;
+            border: 1px solid #283548;
+            border-radius: 8px;
+            padding: 14px;
+            font-family: 'Consolas', 'Fira Code', monospace;
+            color: #38bdf8;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body class="py-3">
+    <div class="container-fluid px-4">
+
+        <!-- Górny pasek nawigacyjny -->
+        <header class="d-flex flex-wrap justify-content-between align-items-center mb-3 pb-3 border-bottom border-secondary">
+            <div>
+                <h3 class="fw-bold text-white mb-0">🌿 Ragwort Detection & Option C Vision Hub</h3>
+                <small class="text-secondary">Segmentacja organów (Kwiaty, Liście, Łodygi) &bull; Kompozycyjne rozpoznawanie starca jakubka</small>
+            </div>
+            <div class="d-flex align-items-center gap-3 mt-2 mt-md-0">
+                <div class="d-flex align-items-center bg-dark p-2 rounded border border-secondary">
+                    <label for="modelSelect" class="small text-secondary me-2 mb-0">Aktywny model:</label>
+                    <select id="modelSelect" class="form-select form-select-sm bg-secondary text-white border-0" style="min-width: 220px;" onchange="switchModel(this.value)">
+                        <option value="">Ładowanie modeli...</option>
+                    </select>
+                </div>
+                <span id="modelTypeBadge" class="badge bg-primary py-2 px-3">Opcja C (Segmentacja)</span>
+            </div>
+        </header>
+
+        <!-- Zakładki główne -->
+        <ul class="nav nav-tabs mb-4" id="mainTabs" role="tablist">
+            <li class="nav-item">
+                <button class="nav-link active" id="live-tab" data-bs-toggle="tab" data-bs-target="#live-pane">
+                    <i class="bi bi-camera-video me-1"></i> 1. Kamera na żywo (Pipeline C)
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="image-tab" data-bs-toggle="tab" data-bs-target="#image-pane">
+                    <i class="bi bi-image me-1"></i> 2. Przetwarzanie zdjęć (Upload)
+                </button>
+            </li>
+            <li class="nav-item">
+                <button class="nav-link" id="train-tab" data-bs-toggle="tab" data-bs-target="#train-pane">
+                    <i class="bi bi-cpu me-1"></i> 3. Trening na innym komputerze (Hub)
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="mainTabsContent">
+
+            <!-- ZAKŁADKA 1: KAMERA NA ŻYWO (LIVE PIPELINE C) -->
+            <div class="tab-pane fade show active" id="live-pane">
+                <div class="row g-4">
+                    <!-- Kolumna wideo -->
+                    <div class="col-lg-8">
+                        <div class="video-container mb-3">
+                            <span class="badge-live">● STRUMIEŃ LIVE</span>
+                            <img src="/video_feed" id="liveVideoFeed" alt="Strumień wideo z detekcją">
+                        </div>
+
+                        <!-- Kafelki telemetryczne Opcji C -->
+                        <div class="row g-3">
+                            <div class="col-md-3">
+                                <div class="stat-card" style="border-left-color: #38bdf8;">
+                                    <div class="text-secondary small">PŁYNNOŚĆ (FPS)</div>
+                                    <div class="stat-val text-info" id="fpsVal">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card" id="verdictCard" style="border-left-color: #ef4444;">
+                                    <div class="text-secondary small">WERDYKT</div>
+                                    <div class="stat-val fs-4 mt-1" id="verdictVal">ANALIZA...</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card" style="border-left-color: #22c55e;">
+                                    <div class="text-secondary small">STADIUM ROŚLINY</div>
+                                    <div class="stat-val fs-5 mt-1 text-success" id="stageVal">--</div>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="stat-card" style="border-left-color: #ffd700;">
+                                    <div class="text-secondary small">ORGANY W KADRZE</div>
+                                    <div class="stat-val fs-5 mt-1 text-warning" id="organCountsVal">0 kwiatów, 0 liści</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Prawy panel kontrolny -->
+                    <div class="col-lg-4">
+                        <!-- Ustawienia detekcji -->
+                        <div class="card p-3 mb-3">
+                            <h5 class="fw-bold mb-3"><i class="bi bi-sliders me-1"></i> Kontrola parametrów</h5>
+
+                            <!-- Wybór źródła kamery -->
+                            <div class="mb-3">
+                                <label class="form-label small text-secondary">Źródło wideo:</label>
+                                <select class="form-select form-select-sm bg-dark text-white border-secondary" id="cameraSourceSelect" onchange="updateCameraSource(this.value)">
+                                    <option value="0">Kamera fizyczna (Index 0)</option>
+                                    <option value="1">Kamera fizyczna (Index 1)</option>
+                                    <option value="simulation" selected>Symulacja (Zdjęcie łąki / bez USB)</option>
+                                </select>
+                            </div>
+
+                            <!-- Suwak Confidence -->
+                            <div class="mb-3">
+                                <label for="confSlider" class="form-label d-flex justify-content-between small">
+                                    <span>Próg ufności (Confidence):</span>
+                                    <strong class="text-info" id="confDisplay">{{ conf_default }}</strong>
+                                </label>
+                                <input type="range" class="form-range" id="confSlider" min="0.10" max="0.90" step="0.05" value="{{ conf_default }}" oninput="onConfigChange()">
+                            </div>
+
+                            <!-- Suwak IoU -->
+                            <div class="mb-2">
+                                <label for="iouSlider" class="form-label d-flex justify-content-between small">
+                                    <span>Próg NMS (IoU):</span>
+                                    <strong class="text-info" id="iouDisplay">{{ iou_default }}</strong>
+                                </label>
+                                <input type="range" class="form-range" id="iouSlider" min="0.10" max="0.80" step="0.05" value="{{ iou_default }}" oninput="onConfigChange()">
+                            </div>
+                        </div>
+
+                        <!-- Legenda kolorów masek Opcji C -->
+                        <div class="card p-3 mb-3">
+                            <h6 class="fw-bold mb-2"><i class="bi bi-palette me-1"></i> Legenda masek organów</h6>
+                            <div class="d-flex flex-wrap gap-2 small">
+                                <span class="badge organ-badge-flower px-2 py-1">Kwiat (Yellow)</span>
+                                <span class="badge organ-badge-leaf px-2 py-1">Liść (Green)</span>
+                                <span class="badge organ-badge-stem px-2 py-1">Łodyga (Brown)</span>
+                                <span class="badge bg-danger px-2 py-1">Starzec (Ragwort box)</span>
+                            </div>
+                        </div>
+
+                        <!-- Tabela celownika robota Hege -->
+                        <div class="card p-3">
+                            <h6 class="fw-bold mb-2"><i class="bi bi-crosshair me-1"></i> Koordynaty robota Hege</h6>
+                            <div class="table-responsive" style="max-height: 250px; overflow-y: auto;">
+                                <table class="table table-dark table-sm table-striped text-center align-middle mb-0 small">
+                                    <thead>
+                                        <tr>
+                                            <th>#</th>
+                                            <th>Organ</th>
+                                            <th>Pewność</th>
+                                            <th>Środek (X, Y)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="telemetryBody">
+                                        <tr><td colspan="4" class="text-secondary">Oczekiwanie na detekcję...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ZAKŁADKA 2: PRZETWARZANIE POJEDYNCZYCH ZDJĘĆ -->
+            <div class="tab-pane fade" id="image-pane">
+                <div class="row g-4">
+                    <div class="col-lg-5">
+                        <div class="card p-4">
+                            <h5 class="fw-bold mb-3"><i class="bi bi-upload me-2"></i> Wgraj zdjęcie do analizy</h5>
+                            <p class="text-secondary small mb-3">
+                                Możesz wgrać zdjęcie liści, kwiatów lub fragmentu łąki z dysku, aby przetestować rozpoznawanie w Opcji C.
+                            </p>
+
+                            <div class="mb-3">
+                                <input class="form-control bg-dark text-white border-secondary" type="file" id="imageInput" accept="image/*">
+                            </div>
+
+                            <button class="btn btn-primary w-100 fw-bold" onclick="processUploadedImage()">
+                                <i class="bi bi-lightning-charge me-1"></i> Przetwórz zdjęcie w Pipeline C
+                            </button>
+
+                            <hr class="border-secondary my-4">
+
+                            <!-- Podsumowanie biometryczne -->
+                            <h6 class="fw-bold mb-2">Raport biometryczny Opcji C:</h6>
+                            <div id="imageReportCard" class="p-3 rounded bg-dark border border-secondary small text-secondary">
+                                Wybierz zdjęcie i kliknij przycisk powyżej, aby zobaczyć analizę.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-lg-7">
+                        <div class="card p-3">
+                            <h5 class="fw-bold mb-3"><i class="bi bi-eye me-2"></i> Wynik segmentacji i rozpoznania</h5>
+                            <div id="imageResultContainer" class="text-center p-4 border border-secondary rounded bg-dark" style="min-height: 400px;">
+                                <span class="text-secondary">Tutaj pojawi się przetworzony obraz z nałożonymi maskami.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ZAKŁADKA 3: TRENING NA INNYM KOMPUTERZE (TRAINING HUB) -->
+            <div class="tab-pane fade" id="train-pane">
+                <div class="row g-4">
+                    <div class="col-lg-6">
+                        <div class="card p-4">
+                            <h5 class="fw-bold mb-2"><i class="bi bi-terminal me-2"></i> Generator komendy treningowej</h5>
+                            <p class="text-secondary small mb-3">
+                                Skonfiguruj parametry, wygeneruj gotową komendę i uruchom ją na komputerze z GPU lub w Google Colab.
+                            </p>
+
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-6">
+                                    <label class="form-label small text-secondary">Model bazowy:</label>
+                                    <select class="form-select form-select-sm bg-dark text-white border-secondary" id="trainModelSelect">
+                                        <option value="yolov8n-seg.pt" selected>yolov8n-seg.pt (Szybki, zalecany)</option>
+                                        <option value="yolov8s-seg.pt">yolov8s-seg.pt (Dokładniejszy)</option>
+                                        <option value="yolo11n-seg.pt">yolo11n-seg.pt (YOLO11 nano)</option>
+                                        <option value="yolo11s-seg.pt">yolo11s-seg.pt (YOLO11 small)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small text-secondary">Liczba epok:</label>
+                                    <input type="number" class="form-control form-control-sm bg-dark text-white border-secondary" id="trainEpochs" value="50">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small text-secondary">Rozmiar batcha:</label>
+                                    <input type="number" class="form-control form-control-sm bg-dark text-white border-secondary" id="trainBatch" value="8">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small text-secondary">Rozdzielczość (imgsz):</label>
+                                    <select class="form-select form-select-sm bg-dark text-white border-secondary" id="trainImgsz">
+                                        <option value="640" selected>640 px (Optymalny)</option>
+                                        <option value="1024">1024 px (Wysoka szczegółowość organów)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <button class="btn btn-outline-info w-100 fw-bold mb-3" onclick="generateTrainingCommands()">
+                                <i class="bi bi-gear-wide-connected me-1"></i> Wygeneruj komendy
+                            </button>
+
+                            <label class="small text-secondary fw-bold mb-1">Polecenie terminala (Windows / Linux):</label>
+                            <div class="position-relative mb-3">
+                                <div class="code-box" id="shellCommandBox">python scripts/train_segmentation.py --model yolov8n-seg.pt --data data/ragwort_parts.yaml --epochs 50 --batch 8 --imgsz 640</div>
+                                <button class="btn btn-sm btn-secondary position-absolute top-0 end-0 m-2" onclick="copyToClipboard('shellCommandBox')">Kopiuj</button>
+                            </div>
+
+                            <label class="small text-secondary fw-bold mb-1">Skrypt dla Google Colab (GPU):</label>
+                            <div class="position-relative">
+                                <div class="code-box" id="colabCommandBox"># Kliknij 'Wygeneruj komendy' powyżej</div>
+                                <button class="btn btn-sm btn-secondary position-absolute top-0 end-0 m-2" onclick="copyToClipboard('colabCommandBox')">Kopiuj</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Checklist co przenieść na drugi komputer -->
+                    <div class="col-lg-6">
+                        <div class="card p-4">
+                            <h5 class="fw-bold mb-3"><i class="bi bi-box-seam me-2"></i> Co przenieść na drugi komputer?</h5>
+                            <div class="list-group list-group-flush bg-transparent small">
+                                <div class="list-group-item bg-transparent text-white border-secondary px-0">
+                                    <strong class="text-info">1. Katalog <code>data/ragwort_parts/</code></strong>: Zdjęcia oraz etykiety z poligonami (format YOLO segmentacji: <code>klasa x1 y1 x2 y2...</code>).
+                                </div>
+                                <div class="list-group-item bg-transparent text-white border-secondary px-0">
+                                    <strong class="text-info">2. Konfiguracja <code>data/ragwort_parts.yaml</code></strong>: Plik z nazwami klas (flower, leaf, stem).
+                                </div>
+                                <div class="list-group-item bg-transparent text-white border-secondary px-0">
+                                    <strong class="text-info">3. Skrypt treningowy</strong>: <code>scripts/train_segmentation.py</code> oraz folder <code>src/</code>.
+                                </div>
+                                <div class="list-group-item bg-transparent text-white border-secondary px-0">
+                                    <strong class="text-info">4. Zależności</strong>: <code>pip install -r requirements/requirementsYOLO.txt</code>.
+                                </div>
+                            </div>
+
+                            <div class="alert alert-success mt-4 mb-0 small">
+                                <h6 class="fw-bold"><i class="bi bi-check-circle me-1"></i> Jak wgrać wagi po treningu do tej aplikacji?</h6>
+                                <p class="mb-1">Po zakończeniu treningu skrypt zapisze najlepszy model w:</p>
+                                <code>models/ragwort_segmentation_best.pt</code>
+                                <p class="mt-2 mb-0">Skopiuj ten plik do folderu <code>models/</code> na tym komputerze i wybierz go z listy rozwijanej u góry!</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // -------------------------------------------------------------
+        // Ładowanie listy modeli i obsługa przełączania wag
+        // -------------------------------------------------------------
+        async function loadModelsList() {
+            try {
+                const res = await fetch('/api/models');
+                const data = await res.json();
+                const select = document.getElementById('modelSelect');
+                select.innerHTML = '';
+
+                data.models.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.name;
+                    opt.textContent = `${m.name} (${m.type}, ${m.size_mb} MB)`;
+                    if (m.name === data.active_model) {
+                        opt.selected = true;
+                    }
+                    select.appendChild(opt);
+                });
+
+                document.getElementById('modelTypeBadge').textContent = data.is_segmentation ? 'Opcja C (Segmentacja)' : 'Detekcja (BBoxes)';
+                document.getElementById('modelTypeBadge').className = data.is_segmentation ? 'badge bg-success py-2 px-3' : 'badge bg-warning text-dark py-2 px-3';
+            } catch (err) {
+                console.error("Błąd ładowania modeli:", err);
+            }
+        }
+
+        async function switchModel(modelName) {
+            try {
+                const res = await fetch('/api/models/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: modelName })
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    loadModelsList();
+                }
+            } catch (err) {
+                console.error("Błąd przełączania modelu:", err);
+            }
+        }
+
+        // -------------------------------------------------------------
+        // Aktualizacja konfiguracji na żywo (Suwaki i Kamera)
+        // -------------------------------------------------------------
+        function onConfigChange() {
+            const conf = parseFloat(document.getElementById('confSlider').value);
+            const iou = parseFloat(document.getElementById('iouSlider').value);
+            document.getElementById('confDisplay').textContent = conf.toFixed(2);
+            document.getElementById('iouDisplay').textContent = iou.toFixed(2);
+
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ conf: conf, iou: iou })
+            });
+        }
+
+        function updateCameraSource(source) {
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ camera_mode: source })
+            });
+        }
+
+        // -------------------------------------------------------------
+        // Pętla odpytywania telemetrii (co 500ms)
+        // -------------------------------------------------------------
+        setInterval(async () => {
+            try {
+                const res = await fetch('/api/telemetry');
+                const data = await res.json();
+
+                document.getElementById('fpsVal').textContent = data.fps;
+
+                const analysis = data.analysis;
+                const verdictCard = document.getElementById('verdictCard');
+                const verdictVal = document.getElementById('verdictVal');
+                const stageVal = document.getElementById('stageVal');
+                const organCountsVal = document.getElementById('organCountsVal');
+
+                if (analysis.is_ragwort) {
+                    verdictCard.style.borderLeftColor = '#22c55e';
+                    verdictVal.textContent = `STARZEC (${(analysis.confidence*100).toFixed(0)}%)`;
+                    verdictVal.className = 'stat-val fs-4 mt-1 text-success';
+                } else {
+                    verdictCard.style.borderLeftColor = '#ef4444';
+                    verdictVal.textContent = 'BRAK STARCA';
+                    verdictVal.className = 'stat-val fs-4 mt-1 text-danger';
+                }
+
+                stageVal.textContent = analysis.stage ? analysis.stage.toUpperCase() : 'UNKNOWN';
+
+                const counts = analysis.counts || {};
+                organCountsVal.textContent = `${counts.flowers || 0} kw., ${counts.leaves || 0} liści, ${counts.stems || 0} łod.`;
+
+                // Tabela celownika robota Hege
+                const telemetryBody = document.getElementById('telemetryBody');
+                if (data.detections && data.detections.length > 0) {
+                    let html = '';
+                    data.detections.forEach((det, idx) => {
+                        let badgeClass = 'bg-secondary';
+                        const nameL = det.class.toLowerCase();
+                        if (nameL.includes('flower') || nameL.includes('kwiat')) badgeClass = 'organ-badge-flower';
+                        else if (nameL.includes('leaf') || nameL.includes('lisc')) badgeClass = 'organ-badge-leaf';
+                        else if (nameL.includes('stem') || nameL.includes('lodyg')) badgeClass = 'organ-badge-stem';
+                        else if (nameL.includes('ragwort')) badgeClass = 'bg-danger';
+
+                        html += `
+                            <tr>
+                                <td>${idx + 1}</td>
+                                <td><span class="badge ${badgeClass}">${det.class}</span></td>
+                                <td>${(det.confidence * 100).toFixed(0)}%</td>
+                                <td><code>[${det.center[0]}, ${det.center[1]}]</code></td>
+                            </tr>
+                        `;
+                    });
+                    telemetryBody.innerHTML = html;
+                } else {
+                    telemetryBody.innerHTML = '<tr><td colspan="4" class="text-secondary">Brak obiektów w kadrze</td></tr>';
+                }
+
+            } catch (err) {
+                // Ignore transient network errors
+            }
+        }, 500);
+
+        // -------------------------------------------------------------
+        // Przetwarzanie wgrywanego zdjęcia
+        // -------------------------------------------------------------
+        async function processUploadedImage() {
+            const input = document.getElementById('imageInput');
+            if (!input.files || input.files.length === 0) {
+                alert("Wybierz plik ze zdjęciem!");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('image', input.files[0]);
+
+            const container = document.getElementById('imageResultContainer');
+            container.innerHTML = '<div class="spinner-border text-info my-5" role="status"></div><p class="text-secondary">Przetwarzanie przez pipeline segmentacji...</p>';
+
+            try {
+                const res = await fetch('/api/process_image', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+
+                if (data.status === 'success') {
+                    container.innerHTML = `<img src="${data.image_base64}" class="img-fluid rounded shadow border border-secondary" style="max-height: 520px;">`;
+
+                    const a = data.analysis;
+                    const c = a.counts;
+                    const ar = a.areas;
+                    const report = document.getElementById('imageReportCard');
+                    report.innerHTML = `
+                        <div class="mb-2">
+                            <strong>Decyzja:</strong>
+                            <span class="badge ${a.is_ragwort ? 'bg-success' : 'bg-danger'} fs-6 ms-1">
+                                ${a.is_ragwort ? 'STARZEC JAKUBEK ZIDENTYFIKOWANY' : 'BRAK STARCA / INNA ROŚLINA'}
+                            </span>
+                        </div>
+                        <div class="mb-1"><strong>Pewność (Confidence):</strong> ${(a.confidence * 100).toFixed(1)}%</div>
+                        <div class="mb-1"><strong>Stadium:</strong> <span class="text-info">${a.stage}</span></div>
+                        <div class="mb-1"><strong>Liczba organów:</strong> ${c.flowers} kwiatów, ${c.leaves} liści, ${c.stems} łodyg</div>
+                        <div class="mb-0"><strong>Powierzchnia masek:</strong> Kwiaty: ${ar.flower_area_px.toFixed(0)} px², Liście: ${ar.leaf_area_px.toFixed(0)} px²</div>
+                    `;
+                } else {
+                    container.innerHTML = `<div class="text-danger p-4">Błąd przetwarzania: ${data.message}</div>`;
+                }
+            } catch (err) {
+                container.innerHTML = `<div class="text-danger p-4">Błąd serwera: ${err}</div>`;
+            }
+        }
+
+        // -------------------------------------------------------------
+        // Generator komend treningowych
+        // -------------------------------------------------------------
+        async function generateTrainingCommands() {
+            const model = document.getElementById('trainModelSelect').value;
+            const epochs = document.getElementById('trainEpochs').value;
+            const batch = document.getElementById('trainBatch').value;
+            const imgsz = document.getElementById('trainImgsz').value;
+
+            const res = await fetch('/api/training/command', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: model,
+                    epochs: epochs,
+                    batch: batch,
+                    imgsz: imgsz,
+                    device: '0'
+                })
+            });
+            const data = await res.json();
+            document.getElementById('shellCommandBox').textContent = data.command_shell;
+            document.getElementById('colabCommandBox').textContent = data.colab_script;
+        }
+
+        function copyToClipboard(elementId) {
+            const text = document.getElementById(elementId).textContent;
+            navigator.clipboard.writeText(text);
+            alert("Skopiowano polecenie do schowka!");
+        }
+
+        // Inicjalizacja przy załadowaniu strony
+        window.onload = () => {
+            loadModelsList();
+            generateTrainingCommands();
+        };
+    </script>
+</body>
+</html>
