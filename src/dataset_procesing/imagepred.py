@@ -19,7 +19,8 @@ model.fc = nn.Linear(
 model.load_state_dict(
     torch.load(
         "top_view_classifier.pth",
-        map_location=device
+        map_location=device,
+        weights_only=True
     )
 )
 
