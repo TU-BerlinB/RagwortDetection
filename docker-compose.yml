@@ -1,7 +1,10 @@
 services:
 
   yolo:
-    build: .
+    build: 
+      context: .
+      args:
+        REQUIREMENTS_FILE: requirementsYOLO.txt
     container_name: yolo
     working_dir: /workspace
     shm_size: '16gb'
@@ -13,7 +16,10 @@ services:
     gpus: all
 
   deim:
-    build: .
+    build: 
+      context: .
+      args:
+        REQUIREMENTS_FILE: requirementsDEIM.txt
     container_name: deim
     working_dir: /workspace
     shm_size: '16gb'
