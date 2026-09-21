@@ -16,3 +16,4 @@ scipy
 calflops
 pandas
 ultralytics
+sentencepiece
