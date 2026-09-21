@@ -70,3 +70,12 @@ data/
 metadata/
 data/
 *.jpg
+
+
+afterfaciltylocation/
+
+#baza danych top view
+*.zip
+
+labeling/
+afterfacilitylocation/

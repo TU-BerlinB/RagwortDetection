@@ -82,6 +82,34 @@ HF_HINT = (
 USER_AGENT = "RagwortDetection/1.0 (research project; contact via GitHub TU-BerlinB/RagwortDetection)"
 
 
+def make_fetcher(timeout: int):
+    """Funkcja pobierajaca bajty spod URL. Uzywa 'requests', a gdy go nie ma - urllib ze stdlib."""
+    try:
+        import requests
+
+        session = requests.Session()
+        session.headers.update({"User-Agent": USER_AGENT})
+
+        def fetch(url: str) -> bytes:
+            resp = session.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp.content
+
+        return fetch
+    except ImportError:
+        import urllib.request
+
+        print("[uwaga] brak biblioteki 'requests' -> uzywam urllib (wolniej, bez wspoldzielenia polaczen).")
+        print("        Szybciej bedzie po:  pip install requests")
+
+        def fetch(url: str) -> bytes:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+
+        return fetch
+
+
 def download_candidates(url: str, prefer_small: bool) -> List[str]:
     """URL-e do sprobowania, od najlzejszego. iNaturalist trzyma warianty rozmiarowe
     pod ta sama sciezka, a 'original.jpg' potrafi wazyc kilka MB."""
@@ -135,7 +163,6 @@ def thumb_path(cache_dir: Path, url: str) -> Path:
 def download_missing(
     rows: List[dict], cache_dir: Path, workers: int, max_side: int, timeout: int, prefer_small: bool
 ) -> Dict[str, str]:
-    import requests
     from PIL import Image
     from tqdm import tqdm
 
@@ -147,8 +174,7 @@ def download_missing(
     if not todo:
         return {}
 
-    session = requests.Session()
-    session.headers.update({"User-Agent": USER_AGENT})
+    fetch_bytes = make_fetcher(timeout)
     failures: Dict[str, str] = {}
 
     def fetch(row: dict) -> None:
@@ -157,9 +183,7 @@ def download_missing(
         last = ""
         for candidate in download_candidates(url, prefer_small):
             try:
-                resp = session.get(candidate, timeout=timeout)
-                resp.raise_for_status()
-                img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                img = Image.open(io.BytesIO(fetch_bytes(candidate))).convert("RGB")
                 img.thumbnail((max_side, max_side))
                 img.save(dest, "JPEG", quality=90)
                 return
