@@ -91,44 +91,120 @@ def convert_voc_xml_to_yolo_txt(xml_path: Path, output_txt: Path) -> bool:
         return False
 
 
+def sanitize_yolo_label_file(lbl_path: Path):
+    """Konwertuje ewentualne wiersze z poligonami (>5 kolumn) na standardowe ramki detekcji (cls xc yc w h)."""
+    if not lbl_path.is_file() or lbl_path.stat().st_size == 0:
+        return
+    try:
+        lines = lbl_path.read_text(encoding="utf-8").splitlines()
+        new_lines = []
+        modified = False
+        for line in lines:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            if len(parts) == 5:
+                new_lines.append(" ".join(parts))
+            elif len(parts) > 5:
+                modified = True
+                cls_id = parts[0]
+                try:
+                    coords = [float(v) for v in parts[1:]]
+                    xs = coords[0::2]
+                    ys = coords[1::2]
+                    if xs and ys:
+                        xmin, xmax = max(0.0, min(xs)), min(1.0, max(xs))
+                        ymin, ymax = max(0.0, min(ys)), min(1.0, max(ys))
+                        xc = (xmin + xmax) / 2.0
+                        yc = (ymin + ymax) / 2.0
+                        w = max(0.0, xmax - xmin)
+                        h = max(0.0, ymax - ymin)
+                        new_lines.append(f"{cls_id} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
+                except Exception:
+                    continue
+        if modified:
+            lbl_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def get_expected_label_path(img_path: Path) -> Path:
+    """Zwraca sciezke pliku etykiety, jakiej oczekuje Ultralytics (img2label_paths)."""
+    posix_path = img_path.resolve().as_posix()
+    sa, sb = "/images/", "/labels/"
+    if sa in posix_path:
+        lbl_str = sb.join(posix_path.rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt"
+        return Path(lbl_str)
+    else:
+        return img_path.parent / f"{img_path.stem}.txt"
+
+
 def ensure_label_exists_for_image(img_path: Path, possible_label_dirs: List[Path]) -> Path:
     """
     Zapewnia, ze dla danego zdjecia istnieje plik etykiety .txt w miejscu,
     gdzie YOLO go znajdzie (obok zdjecia lub w labels/).
     """
+    target_lbl = get_expected_label_path(img_path)
     stem = img_path.stem
 
-    # 1. Sprawdz czy obok zdjecia jest .txt
-    neighbor_txt = img_path.parent / f"{stem}.txt"
-    if neighbor_txt.is_file():
-        return neighbor_txt
+    # 1. Jesli plik docelowy juz istnieje i nie jest pusty, upewnij sie ze format jest poprawny
+    if target_lbl.is_file() and target_lbl.stat().st_size > 0:
+        sanitize_yolo_label_file(target_lbl)
+        return target_lbl
 
-    # 2. Sprawdz czy w folderze nadrzednym w labels/ jest .txt
-    sub_lbl = img_path.parent.parent / "labels" / f"{stem}.txt"
-    if sub_lbl.is_file():
-        return sub_lbl
+    # 2. Sprawdz czy obok zdjecia jest niepusty plik .txt
+    neighbor_txt = img_path.parent / f"{stem}.txt"
+    if neighbor_txt != target_lbl and neighbor_txt.is_file() and neighbor_txt.stat().st_size > 0:
+        target_lbl.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(neighbor_txt, target_lbl)
+            sanitize_yolo_label_file(target_lbl)
+            return target_lbl
+        except Exception:
+            return neighbor_txt
 
     # 3. Przeszukaj liste kandydatow katalogow
     for d in possible_label_dirs:
         if not d.exists():
             continue
+
         txt_cand = d / f"{stem}.txt"
-        if txt_cand.is_file():
-            # Skopiuj obok zdjecia lub do labels aby YOLO bezblednie go widzial
+        if txt_cand.is_file() and txt_cand.stat().st_size > 0:
+            target_lbl.parent.mkdir(parents=True, exist_ok=True)
             try:
-                shutil.copy2(txt_cand, neighbor_txt)
-                return neighbor_txt
+                shutil.copy2(txt_cand, target_lbl)
+                sanitize_yolo_label_file(target_lbl)
+                return target_lbl
             except Exception:
                 return txt_cand
 
         xml_cand = d / f"{stem}.xml"
-        if xml_cand.is_file():
-            if convert_voc_xml_to_yolo_txt(xml_cand, neighbor_txt):
-                return neighbor_txt
+        if xml_cand.is_file() and xml_cand.stat().st_size > 0:
+            target_lbl.parent.mkdir(parents=True, exist_ok=True)
+            if convert_voc_xml_to_yolo_txt(xml_cand, target_lbl):
+                return target_lbl
+
+        # Sprawdz pliki ignorujac wielkosc liter (case-insensitive)
+        for f in d.rglob("*"):
+            if f.is_file() and f.stem.lower() == stem.lower():
+                if f.suffix.lower() == ".txt" and f.stat().st_size > 0:
+                    target_lbl.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copy2(f, target_lbl)
+                        sanitize_yolo_label_file(target_lbl)
+                        return target_lbl
+                    except Exception:
+                        return f
+                elif f.suffix.lower() == ".xml" and f.stat().st_size > 0:
+                    target_lbl.parent.mkdir(parents=True, exist_ok=True)
+                    if convert_voc_xml_to_yolo_txt(f, target_lbl):
+                        return target_lbl
 
     # 4. Jesli zupelnie brak etykiety -> utworz pusty plik (obraz tla / negatyw)
-    neighbor_txt.write_text("", encoding="utf-8")
-    return neighbor_txt
+    target_lbl.parent.mkdir(parents=True, exist_ok=True)
+    if not target_lbl.is_file():
+        target_lbl.write_text("", encoding="utf-8")
+    return target_lbl
 
 
 def process_concatenated_dataset(
@@ -157,8 +233,8 @@ def process_concatenated_dataset(
     felix_dir = concatenated_dir / "Felix_data"
     felix_label_dirs = []
     if felix_dir.exists():
-        for d in felix_dir.rglob("annotation*"):
-            if d.is_dir():
+        for d in felix_dir.rglob("*"):
+            if d.is_dir() and any(k in d.name.lower() for k in ["annot", "label"]):
                 felix_label_dirs.append(d)
 
         # Znajdz zdjecia w images_selected_200 lub w Felix_data
@@ -216,40 +292,48 @@ def process_concatenated_dataset(
     n_val_felix = max(1, int(len(shuffled_felix) * val_felix_ratio)) if len(shuffled_felix) > 10 else 0
     val_felix = shuffled_felix[:n_val_felix]
     train_felix = shuffled_felix[n_val_felix:]
-
     val_images.extend(val_felix)
 
-    # Przygotowanie manifestu train_weighted.txt
+    # Usuniecie ewentualnych starych/uszkodzonych plikow *.cache Ultralytics
+    for cache_file in concatenated_dir.rglob("*.cache"):
+        try:
+            cache_file.unlink()
+        except Exception:
+            pass
+
+    # Przygotowanie manifestu train_weighted.txt ze sciezka relatywna z ./
+    # Ultralytics konwertuje sciezki zaczynajace sie od ./ wzgledem katalogu pliku manifestu (local to global),
+    # co gwarantuje 100% przenosnosc miedzy Dockerem (/workspace) a hostem (Linux/Windows).
     train_lines: List[str] = []
 
     # Zdjecia GOOD (Felix): powtorzone good_weight razy
     for p in train_felix:
-        rel_path = p.relative_to(concatenated_dir).as_posix()
+        rel_path = f"./{p.relative_to(concatenated_dir).as_posix()}"
         for _ in range(good_weight):
             train_lines.append(rel_path)
 
     # Zdjecia OTHER: powtorzone other_weight razy
     for p in other_images:
-        rel_path = p.relative_to(concatenated_dir).as_posix()
+        rel_path = f"./{p.relative_to(concatenated_dir).as_posix()}"
         for _ in range(other_weight):
             train_lines.append(rel_path)
 
-    # Przygotowanie manifestu val.txt
+    # Przygotowanie manifestu val.txt ze sciezka relatywna z ./
     val_lines: List[str] = []
     for p in val_images:
-        val_lines.append(p.relative_to(concatenated_dir).as_posix())
+        val_lines.append(f"./{p.relative_to(concatenated_dir).as_posix()}")
 
     # Zapis plikow manifestu
-    train_txt_path = concatenated_dir / "train_weighted.txt"
-    val_txt_path = concatenated_dir / "val.txt"
+    train_txt_path = (concatenated_dir / "train_weighted.txt").resolve()
+    val_txt_path = (concatenated_dir / "val.txt").resolve()
     train_txt_path.write_text("\n".join(train_lines) + "\n", encoding="utf-8")
     val_txt_path.write_text("\n".join(val_lines) + "\n", encoding="utf-8")
 
-    # Zapis data_weighted.yaml z relatywna sciezka
+    # Zapis data_weighted.yaml (bez sciezki na sztywno - Ultralytics automatycznie uzywa katalogu pliku yaml)
     yaml_data = {
-        "path": ".",
         "train": "train_weighted.txt",
         "val": "val.txt",
+        "test": "val.txt",
         "nc": 2,
         "names": {0: "ragwort", 1: "objects"},
     }

@@ -265,9 +265,11 @@ def trenuj_i_ewaluuj(
     epochs: int = 50,
     imgsz: int = 640,
     batch: int = 16,
-    workers: int = 4,
+    workers: int = 8,
+    cache: Union[bool, str] = False,
     device: Optional[str] = None,
     model_name: str = "yolov8s.pt",
+    optimizer: str = "AdamW",
     skip_train: bool = False,
     weights_path: Optional[str] = None,
     test_images_dir: Optional[Union[str, Path]] = None,
@@ -278,7 +280,7 @@ def trenuj_i_ewaluuj(
 
     # Automatyczny wybór urządzenia (CUDA / GPU lub CPU)
     if device is None:
-        device = "0" if torch.cuda.is_available() else "cpu"
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
     # Automatyczne wyszukanie pliku data.yaml (priorytet dla zwagowanych danych)
     if data_yaml is None:
@@ -308,7 +310,7 @@ def trenuj_i_ewaluuj(
             pass
     print(f"[YOLOv8] Zbiór danych:           {data_yaml}")
     print(f"[YOLOv8] Model bazowy:           {model_name}")
-    print(f"[YOLOv8] Parametry:              Epoki: {epochs}, Imgsz: {imgsz}, Batch: {batch}, Workers: {workers}")
+    print(f"[YOLOv8] Parametry:              Epoki: {epochs}, Imgsz: {imgsz}, Batch: {batch}, Cache: {cache}, Optimizer: {optimizer}, Workers: {workers}")
 
     best_weights_file = MODELS_DIR / "ragwort_yolov8_best.pt"
 
@@ -329,6 +331,8 @@ def trenuj_i_ewaluuj(
             batch=batch,
             workers=workers,
             device=device,
+            optimizer=optimizer,
+            cache=cache,
             name="ragwort_yolov8_weighted",
             exist_ok=True,
             verbose=True,
@@ -399,10 +403,18 @@ def main():
     parser.add_argument("--epochs", type=int, default=50, help="Liczba epok treningu (domyślnie: 50)")
     parser.add_argument("--imgsz", type=int, default=640, help="Rozdzielczość obrazu (domyślnie: 640)")
     parser.add_argument("--batch", type=int, default=16, help="Rozmiar batcha (domyślnie: 16, zmniejsz do 8 przy małym VRAM)")
-    parser.add_argument("--workers", type=int, default=4, help="Liczba wątków loadera (domyślnie: 4, ustaw 0 na Windows przy problemach)")
+    parser.add_argument("--workers", type=int, default=8, help="Liczba wątków loadera danych (domyślnie: 8 dla procesora 6c/12t)")
+    parser.add_argument("--cache", type=str, default="none", choices=["none", "ram", "disk"], help="Cache obrazów: 'ram' (w pamięci RAM), 'disk' lub 'none' (domyślnie)")
+    parser.add_argument("--optimizer", type=str, default="AdamW", choices=["AdamW", "SGD", "Adam", "auto"], help="Optymalizator (domyślnie: AdamW, stabilny i bezpieczny na GPU)")
     parser.add_argument("--skip-train", action="store_true", help="Pomiń trening i załaduj istniejące wagi")
     parser.add_argument("--weights", type=str, default=None, help="Własna ścieżka do wag .pt")
     args = parser.parse_args()
+
+    cache_val: Union[bool, str] = False
+    if args.cache == "ram":
+        cache_val = True
+    elif args.cache == "disk":
+        cache_val = "disk"
 
     trenuj_i_ewaluuj(
         data_yaml=args.data,
@@ -410,8 +422,10 @@ def main():
         imgsz=args.imgsz,
         batch=args.batch,
         workers=args.workers,
+        cache=cache_val,
         device=args.device,
         model_name=args.model,
+        optimizer=args.optimizer,
         skip_train=args.skip_train,
         weights_path=args.weights,
     )

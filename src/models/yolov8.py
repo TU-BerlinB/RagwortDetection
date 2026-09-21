@@ -53,10 +53,15 @@ class YOLOv8:
             device: 'cuda', 'cpu' lub None (automatyczne wykrycie).
             task: Zadanie modelu ('detect', 'segment', 'classify'). Domyślnie 'detect'.
         """
+        # Normalizacja urzadzenia (PyTorch wymaga 'cuda:0' lub 'cuda', nie samo '0')
         if device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        elif str(device).isdigit():
+            self.device = f"cuda:{device}" if torch.cuda.is_available() else "cpu"
+        elif str(device).lower() in ("gpu", "cuda"):
+            self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         else:
-            self.device = device
+            self.device = str(device)
 
         self.model_weight = str(model_weight)
         self.task = task
@@ -65,8 +70,11 @@ class YOLOv8:
         self.model = YOLO(self.model_weight, task=self.task)
 
         # Przeniesienie na odpowiednie urządzenie
-        if hasattr(self.model, "to"):
-            self.model.to(self.device)
+        try:
+            if hasattr(self.model, "to"):
+                self.model.to(self.device)
+        except Exception:
+            pass
 
         self.best_weight_path: Optional[Path] = None
 
@@ -78,6 +86,7 @@ class YOLOv8:
         batch: int = 8,
         lr0: float = 0.005,
         workers: int = 2,
+        device: Optional[str] = None,
         project: Optional[str] = None,
         name: str = "ragwort_yolov8",
         exist_ok: bool = True,
@@ -86,7 +95,7 @@ class YOLOv8:
         **kwargs: Any,
     ) -> Any:
         """
-        Trenuje model YOLOv8 na podanym zbiorze danych.
+        Trenuje model YOLOv8 na zadanym zbiorze danych.
 
         Args:
             data: Ścieżka do pliku data.yaml (np. data/combined_dataset/data.yaml).
@@ -94,6 +103,8 @@ class YOLOv8:
             imgsz: Rozdzielczość obrazu wejściowego (domyślnie 640).
             batch: Rozmiar batcha.
             lr0: Początkowy współczynnik uczenia.
+            workers: Liczba wątków loadera danych.
+            device: Urządzenie obliczeniowe ('cuda:0', 'cpu' itp.).
             project: Katalog nadrzędny wyników treningu (domyślnie runs).
             name: Nazwa folderu eksperymentu.
             exist_ok: Nadpisywanie istniejącego folderu eksperymentu.
@@ -115,8 +126,10 @@ class YOLOv8:
             )
 
         train_project = project or str(REPO_ROOT / "runs")
+        target_device = device if device is not None else self.device
+        kwargs.pop("device", None)
 
-        print(f"[YOLOv8] Rozpoczynam trening na urządzeniu: {self.device}")
+        print(f"[YOLOv8] Rozpoczynam trening na urządzeniu: {target_device}")
         print(f"[YOLOv8] Zbiór: {data_path} | Epoki: {epochs} | Batch: {batch} | Imgsz: {imgsz}")
 
         results = self.model.train(
@@ -126,7 +139,7 @@ class YOLOv8:
             batch=batch,
             lr0=lr0,
             workers=workers,
-            device=self.device,
+            device=target_device,
             project=train_project,
             name=name,
             exist_ok=exist_ok,
@@ -285,6 +298,7 @@ class YOLOv8:
         imgsz: int = 640,
         batch: int = 16,
         split: str = "val",
+        device: Optional[str] = None,
         verbose: bool = True,
         **kwargs: Any,
     ) -> Any:
@@ -295,12 +309,15 @@ class YOLOv8:
         if not data_path.is_absolute():
             data_path = (REPO_ROOT / data_path).resolve()
 
+        target_device = device if device is not None else self.device
+        kwargs.pop("device", None)
+
         return self.model.val(
             data=str(data_path),
             imgsz=imgsz,
             batch=batch,
             split=split,
-            device=self.device,
+            device=target_device,
             verbose=verbose,
             **kwargs,
         )
