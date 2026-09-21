@@ -14,6 +14,7 @@ Umożliwia:
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -63,16 +64,39 @@ class YOLOv8:
         else:
             self.device = str(device)
 
-        # Sprawdzenie czy waga istnieje w outputs/weights/
+        # Sprawdzenie gdzie znajduje się waga lub gdzie powinna zostać zapisana/pobrana
         mw = Path(model_weight)
-        if not mw.is_file() and (REPO_ROOT / "outputs" / "weights" / mw.name).is_file():
-            self.model_weight = str(REPO_ROOT / "outputs" / "weights" / mw.name)
+        weights_dir = REPO_ROOT / "outputs" / "weights"
+        outputs_dir = REPO_ROOT / "outputs"
+
+        if mw.is_file():
+            self.model_weight = str(mw.resolve())
+        elif (weights_dir / mw.name).is_file():
+            self.model_weight = str((weights_dir / mw.name).resolve())
+        elif (outputs_dir / mw.name).is_file():
+            self.model_weight = str((outputs_dir / mw.name).resolve())
+        elif mw.suffix in (".pt", ".pth") or not mw.parent.name:
+            weights_dir.mkdir(parents=True, exist_ok=True)
+            self.model_weight = str((weights_dir / mw.name).resolve())
         else:
             self.model_weight = str(model_weight)
         self.task = task
 
-        # Inicjalizacja modelu Ultralytics
+        # Inicjalizacja modelu Ultralytics (jeśli waga nie istnieje, zostanie pobrana do self.model_weight)
         self.model = YOLO(self.model_weight, task=self.task)
+
+        # Upewnienie się, że plik wagi bazowej jest dostępny także w outputs/ (symlink lub kopia)
+        try:
+            resolved_weight = Path(self.model_weight)
+            if resolved_weight.is_file() and resolved_weight.parent.resolve() == weights_dir.resolve():
+                outputs_link = outputs_dir / resolved_weight.name
+                if not outputs_link.exists():
+                    try:
+                        outputs_link.symlink_to(Path("weights") / resolved_weight.name)
+                    except Exception:
+                        shutil.copy2(resolved_weight, outputs_link)
+        except Exception:
+            pass
 
         # Przeniesienie na odpowiednie urządzenie
         try:

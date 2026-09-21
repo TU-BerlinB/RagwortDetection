@@ -442,29 +442,33 @@ def process_concatenated_dataset(
         except Exception:
             pass
 
-    # Przygotowanie manifestów YOLO (ze ścieżkami bezwzględnymi lub relatywnymi)
+    # Przygotowanie manifestów YOLO (ze ścieżkami względnymi kompatybilnymi z Docker oraz OS hosta)
+    def to_yolo_rel(img_path: Path, base_dir: Path) -> str:
+        rel = os.path.relpath(img_path.resolve(), base_dir.resolve()).replace("\\", "/")
+        return f"./{rel}"
+
     train_lines: List[str] = []
     for p in train_felix:
-        rel = p.resolve().as_posix()
+        line = to_yolo_rel(p, yolo_dir)
         for _ in range(good_weight):
-            train_lines.append(rel)
+            train_lines.append(line)
 
     for p in other_images:
-        rel = p.resolve().as_posix()
+        line = to_yolo_rel(p, yolo_dir)
         for _ in range(other_weight):
-            train_lines.append(rel)
+            train_lines.append(line)
 
-    val_lines: List[str] = [p.resolve().as_posix() for p in val_images]
+    val_lines: List[str] = [to_yolo_rel(p, yolo_dir) for p in val_images]
 
-    train_txt_path = (yolo_dir / "train_weighted.txt").resolve()
-    val_txt_path = (yolo_dir / "val.txt").resolve()
+    train_txt_path = yolo_dir / "train_weighted.txt"
+    val_txt_path = yolo_dir / "val.txt"
     train_txt_path.write_text("\n".join(train_lines) + "\n", encoding="utf-8")
     val_txt_path.write_text("\n".join(val_lines) + "\n", encoding="utf-8")
 
     yaml_data = {
-        "train": str(train_txt_path),
-        "val": str(val_txt_path),
-        "test": str(val_txt_path),
+        "train": "train_weighted.txt",
+        "val": "val.txt",
+        "test": "val.txt",
         "nc": 2,
         "names": {0: "ragwort", 1: "objects"},
     }
@@ -472,11 +476,25 @@ def process_concatenated_dataset(
     with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.dump(yaml_data, f, sort_keys=False, allow_unicode=True)
 
-    # Kopia do data/data_concatenated/ dla wygody
+    # Kopia do data/data_concatenated/ ze ścieżkami relatywnymi względem concatenated_dir
     try:
-        shutil.copy2(yaml_path, concatenated_dir / "data_weighted.yaml")
-        shutil.copy2(train_txt_path, concatenated_dir / "train_weighted.txt")
-        shutil.copy2(val_txt_path, concatenated_dir / "val.txt")
+        concat_train_lines: List[str] = []
+        for p in train_felix:
+            line = to_yolo_rel(p, concatenated_dir)
+            for _ in range(good_weight):
+                concat_train_lines.append(line)
+
+        for p in other_images:
+            line = to_yolo_rel(p, concatenated_dir)
+            for _ in range(other_weight):
+                concat_train_lines.append(line)
+
+        concat_val_lines: List[str] = [to_yolo_rel(p, concatenated_dir) for p in val_images]
+
+        (concatenated_dir / "train_weighted.txt").write_text("\n".join(concat_train_lines) + "\n", encoding="utf-8")
+        (concatenated_dir / "val.txt").write_text("\n".join(concat_val_lines) + "\n", encoding="utf-8")
+        with open(concatenated_dir / "data_weighted.yaml", "w", encoding="utf-8") as f:
+            yaml.dump(yaml_data, f, sort_keys=False, allow_unicode=True)
     except Exception:
         pass
 

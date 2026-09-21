@@ -19,7 +19,9 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
+
+import yaml
 
 # Ścieżka bazowa projektu
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -266,6 +268,84 @@ def testuj_zewnetrzne_zdjecia(model: YOLOv8, sciezki_zdjec: List[Path]):
     print(f"\nZdjęcia z narysowanymi ramkami zapisano w katalogu: {RESULTS_DIR}")
 
 
+def ensure_portable_data_yaml(yaml_path: Path) -> Path:
+    """
+    Weryfikuje konfigurację YAML zbioru oraz powiązane manifesty .txt,
+    aby były relatywne i przenośne pomiędzy środowiskiem Docker (/workspace)
+    a maszyną lokalną hosta.
+    """
+    yaml_path = Path(yaml_path)
+    if not yaml_path.exists():
+        return yaml_path
+
+    try:
+        with open(yaml_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+    except Exception as e:
+        print(f"[OSTRZEŻENIE] Nie można załadować {yaml_path}: {e}")
+        return yaml_path
+
+    if not isinstance(cfg, dict):
+        return yaml_path
+
+    yaml_dir = yaml_path.parent.resolve()
+    modified = False
+
+    # 1. Usuń parametr 'path' jeśli nie istnieje lub to '.' (w Ultralytics '.' resolve'uje do CWD zamiast folderu YAML)
+    if "path" in cfg and cfg["path"]:
+        p_val = Path(str(cfg["path"]))
+        if not p_val.exists() or p_val.as_posix() == ".":
+            cfg.pop("path", None)
+            modified = True
+
+    # 2. Napraw ścieżki do plików manifestów (train, val, test)
+    for key in ("train", "val", "test"):
+        if key in cfg and isinstance(cfg[key], str) and cfg[key].endswith(".txt"):
+            txt_cand = yaml_dir / Path(cfg[key]).name
+            if txt_cand.exists() and (cfg[key] != txt_cand.name or not Path(cfg[key]).exists()):
+                cfg[key] = txt_cand.name
+                modified = True
+
+            # 3. Weryfikuj i napraw linie w plikach .txt jeśli zawierają bezwzględne ścieżki z innego środowiska
+            txt_file = yaml_dir / Path(cfg[key]).name
+            if txt_file.is_file():
+                try:
+                    lines = txt_file.read_text(encoding="utf-8").splitlines()
+                    new_lines = []
+                    lines_changed = False
+                    for line in lines:
+                        line_str = line.strip()
+                        if not line_str:
+                            continue
+                        if line_str.startswith("/") and not Path(line_str).exists():
+                            parts = Path(line_str).parts
+                            if "data" in parts:
+                                rel_to_repo = Path(*parts[parts.index("data"):])
+                                target_img = (REPO_ROOT / rel_to_repo).resolve()
+                                rel_from_txt = os.path.relpath(target_img, yaml_dir).replace("\\", "/")
+                                new_lines.append(f"./{rel_from_txt}")
+                                lines_changed = True
+                            else:
+                                new_lines.append(line_str)
+                        else:
+                            new_lines.append(line_str)
+                    if lines_changed:
+                        txt_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                        print(f"[INFO] Poprawiono ścieżki na relatywne w: {txt_file}")
+                except Exception as e:
+                    print(f"[OSTRZEŻENIE] Błąd naprawy manifestu {txt_file}: {e}")
+
+    if modified:
+        try:
+            with open(yaml_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg, f, sort_keys=False, allow_unicode=True)
+            print(f"[INFO] Zaktualizowano konfigurację {yaml_path} na ścieżki relatywne.")
+        except Exception as e:
+            print(f"[OSTRZEŻENIE] Nie udało się zapisać poprawionego {yaml_path}: {e}")
+
+    return yaml_path
+
+
 def trenuj_i_ewaluuj(
     data_yaml: Optional[Union[str, Path]] = None,
     epochs: int = 50,
@@ -306,12 +386,19 @@ def trenuj_i_ewaluuj(
             from src.scripts.weight_dataset import process_concatenated_dataset
             data_yaml = process_concatenated_dataset(REPO_ROOT / "data" / "data_concatenated")
 
-    data_yaml = Path(data_yaml)
+    data_yaml = ensure_portable_data_yaml(Path(data_yaml))
 
-    # Sprawdzenie wag bazowych w outputs/weights/
-    base_model_path = WEIGHTS_DIR / model_name
-    if not Path(model_name).is_file() and base_model_path.is_file():
-        model_name = str(base_model_path)
+    # Sprawdzenie wag bazowych w outputs/weights/ lub outputs/ (aby yolov8s.pt był w outputs/)
+    weights_candidate = WEIGHTS_DIR / model_name
+    outputs_candidate = OUTPUTS_DIR / model_name
+    if not Path(model_name).is_file():
+        if weights_candidate.is_file():
+            model_name = str(weights_candidate.resolve())
+        elif outputs_candidate.is_file():
+            model_name = str(outputs_candidate.resolve())
+        elif Path(model_name).suffix in (".pt", ".pth") or not Path(model_name).parent.name:
+            WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+            model_name = str((WEIGHTS_DIR / Path(model_name).name).resolve())
 
     print("====================================================================")
     print(" 1. TRENING MODELU YOLOV8 (Z UWZGLĘDNIENIEM WAG)")
