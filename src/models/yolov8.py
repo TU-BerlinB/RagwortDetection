@@ -34,7 +34,7 @@ class YOLOv8:
 
     Przykłady użycia:
         >>> from src.models.yolov8 import YOLOv8
-        >>> model = YOLOv8("yolov8n.pt")
+        >>> model = YOLOv8("yolov8s.pt")
         >>> results = model.predict("sciezka/do/obrazu.jpg")
         >>> # Trening na połączonym zbiorze:
         >>> # model.train(data="data/combined_dataset/data.yaml", epochs=30)
@@ -42,13 +42,13 @@ class YOLOv8:
 
     def __init__(
         self,
-        model_weight: Union[str, Path] = "yolov8n.pt",
+        model_weight: Union[str, Path] = "yolov8s.pt",
         device: Optional[str] = None,
         task: str = "detect",
     ):
         """
         Args:
-            model_weight: Nazwa bazowego modelu (np. 'yolov8n.pt', 'yolov8s.pt')
+            model_weight: Nazwa bazowego modelu (np. 'yolov8s.pt', 'yolov8m.pt')
                           lub ścieżka do wytrenowanego pliku wag .pt.
             device: 'cuda', 'cpu' lub None (automatyczne wykrycie).
             task: Zadanie modelu ('detect', 'segment', 'classify'). Domyślnie 'detect'.
@@ -136,7 +136,9 @@ class YOLOv8:
         )
 
         # Zapis ścieżki do najlepszych wag
-        save_dir = Path(getattr(self.model.trainer, "save_dir", Path(train_project) / "detect" / name))
+        task_subfolder = "segment" if ("seg" in str(self.model_weight) or self.task == "segment") else "detect"
+        trainer_dir = getattr(self.model.trainer, "save_dir", None)
+        save_dir = Path(trainer_dir) if trainer_dir else Path(train_project) / task_subfolder / name
         best_pt = save_dir / "weights" / "best.pt"
         if best_pt.exists():
             self.best_weight_path = best_pt
@@ -145,7 +147,8 @@ class YOLOv8:
             # Kopiujemy wagi również do models/ dla łatwego dostępu
             models_dir = REPO_ROOT / "models"
             models_dir.mkdir(parents=True, exist_ok=True)
-            saved_copy = models_dir / "ragwort_yolov8_best.pt"
+            saved_filename = "ragwort_yolov8_seg_best.pt" if task_subfolder == "segment" else "ragwort_yolov8_best.pt"
+            saved_copy = models_dir / saved_filename
             import shutil
             shutil.copy2(best_pt, saved_copy)
             print(f"[YOLOv8] Kopia wag zapisana w: {saved_copy}")
@@ -162,7 +165,7 @@ class YOLOv8:
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         """
-        Wykonuje predykcję detekcji na obrazie lub liście obrazów.
+        Wykonuje predykcję detekcji lub segmentacji na obrazie lub liście obrazów.
 
         Args:
             source: Obraz (PIL, numpy, ścieżka do pliku, folder, tensor).
@@ -180,6 +183,8 @@ class YOLOv8:
                     "scores": [0.94, ...],                     # prawdopodobieństwa
                     "labels": [0, ...],                        # indeksy klas
                     "class_names": ["ragwort", ...],           # nazwy klas
+                    "masks": [np.ndarray, ...],                # poligony masek (piksele)
+                    "masks_normalized": [np.ndarray, ...],     # poligony znormalizowane (0..1)
                     "orig_shape": (wysokość, szerokość),
                     "raw": Obiekt Results z ultralytics
                 },
@@ -203,6 +208,8 @@ class YOLOv8:
             scores: List[float] = []
             labels: List[int] = []
             class_names: List[str] = []
+            masks_xy: List[np.ndarray] = []
+            masks_xyn: List[np.ndarray] = []
 
             if res.boxes is not None and len(res.boxes) > 0:
                 # boxes w formacie [xmin, ymin, xmax, ymax]
@@ -214,12 +221,18 @@ class YOLOv8:
                 names_dict = res.names or {}
                 class_names = [names_dict.get(cls_id, str(cls_id)) for cls_id in labels]
 
+            if res.masks is not None:
+                masks_xy = [p for p in res.masks.xy]
+                masks_xyn = [p for p in res.masks.xyn]
+
             parsed_output.append(
                 {
                     "boxes": boxes_xyxy,
                     "scores": scores,
                     "labels": labels,
                     "class_names": class_names,
+                    "masks": masks_xy,
+                    "masks_normalized": masks_xyn,
                     "orig_shape": res.orig_shape,
                     "raw": res,
                 }
@@ -302,8 +315,8 @@ class YOLOv8:
 
 
 if __name__ == "__main__":
-    print("=== Testowanie klasy YOLOv8 ===")
-    yolo = YOLOv8(model_weight="yolov8n.pt")
+    print("=== Test inicjalizacji modelu YOLOv8 Small ===")
+    yolo = YOLOv8(model_weight="yolov8s.pt")
     print(f"Urządzenie modelu: {yolo.device}")
 
     # Test predykcji na syntetycznym obrazie
