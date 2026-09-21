@@ -63,7 +63,12 @@ class YOLOv8:
         else:
             self.device = str(device)
 
-        self.model_weight = str(model_weight)
+        # Sprawdzenie czy waga istnieje w outputs/weights/
+        mw = Path(model_weight)
+        if not mw.is_file() and (REPO_ROOT / "outputs" / "weights" / mw.name).is_file():
+            self.model_weight = str(REPO_ROOT / "outputs" / "weights" / mw.name)
+        else:
+            self.model_weight = str(model_weight)
         self.task = task
 
         # Inicjalizacja modelu Ultralytics
@@ -105,7 +110,7 @@ class YOLOv8:
             lr0: Początkowy współczynnik uczenia.
             workers: Liczba wątków loadera danych.
             device: Urządzenie obliczeniowe ('cuda:0', 'cpu' itp.).
-            project: Katalog nadrzędny wyników treningu (domyślnie runs).
+            project: Katalog nadrzędny wyników treningu (domyślnie outputs/runs/yolo).
             name: Nazwa folderu eksperymentu.
             exist_ok: Nadpisywanie istniejącego folderu eksperymentu.
             save: Zapisywanie wag checkpointów.
@@ -125,7 +130,7 @@ class YOLOv8:
                 "Uruchom najpierw: python src/scripts/data_download.py"
             )
 
-        train_project = project or str(REPO_ROOT / "runs")
+        train_project = project or str(REPO_ROOT / "outputs" / "runs" / "yolo")
         target_device = device if device is not None else self.device
         kwargs.pop("device", None)
 

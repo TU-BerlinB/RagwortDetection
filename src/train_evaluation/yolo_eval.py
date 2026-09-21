@@ -31,12 +31,18 @@ import requests
 from PIL import Image, ImageDraw
 from src.models.yolov8 import YOLOv8
 
-DATA_YAML = REPO_ROOT / "data" / "combined_dataset" / "data.yaml"
+OUTPUTS_DIR = REPO_ROOT / "outputs"
+DATA_YAML = OUTPUTS_DIR / "datasets" / "data_weighted" / "data_weighted.yaml"
+RUNS_DIR = OUTPUTS_DIR / "runs" / "yolo"
+MODELS_DIR = OUTPUTS_DIR / "models"
+WEIGHTS_DIR = OUTPUTS_DIR / "weights"
+EVAL_DIR = OUTPUTS_DIR / "evaluations" / "yolo"
+PREDICTIONS_DIR = OUTPUTS_DIR / "predictions" / "yolo"
+
 TEST_IMAGES_DIR = REPO_ROOT / "data" / "combined_dataset" / "test" / "images"
 TEST_LABELS_DIR = REPO_ROOT / "data" / "combined_dataset" / "test" / "labels"
-MODELS_DIR = REPO_ROOT / "models"
 EXTERNAL_DIR = REPO_ROOT / "data" / "external_test_images"
-RESULTS_DIR = REPO_ROOT / "data" / "external_test_results"
+RESULTS_DIR = PREDICTIONS_DIR / "external_test_results"
 
 # Zewnętrzne zdjęcia z internetu (Wikimedia Commons) do weryfikacji generalizacji
 EXTERNAL_IMAGES = [
@@ -95,8 +101,8 @@ def ewaluacja_modelu(katalog_zdjec, predykcje, poprawne_dane, prog_iou=0.5):
     """
     Główna funkcja oceniająca model pod kątem IoU, Precision, Recall oraz błędów FP/FN.
     """
-    katalog_fp = REPO_ROOT / "bledy_False_Positives"
-    katalog_fn = REPO_ROOT / "bledy_False_Negatives"
+    katalog_fp = EVAL_DIR / "bledy_False_Positives"
+    katalog_fn = EVAL_DIR / "bledy_False_Negatives"
 
     os.makedirs(katalog_fp, exist_ok=True)
     os.makedirs(katalog_fn, exist_ok=True)
@@ -285,6 +291,7 @@ def trenuj_i_ewaluuj(
     # Automatyczne wyszukanie pliku data.yaml (priorytet dla zwagowanych danych)
     if data_yaml is None:
         candidates = [
+            OUTPUTS_DIR / "datasets" / "data_weighted" / "data_weighted.yaml",
             REPO_ROOT / "data" / "data_concatenated" / "data_weighted.yaml",
             REPO_ROOT / "dataset_weighted" / "data.yaml",
             REPO_ROOT / "data" / "combined_dataset" / "data_weighted.yaml",
@@ -294,10 +301,17 @@ def trenuj_i_ewaluuj(
             if c.exists():
                 data_yaml = c
                 break
-        if data_yaml is None:
-            data_yaml = DATA_YAML
+        if data_yaml is None or not Path(data_yaml).exists():
+            print("[INFO] Brak data_weighted.yaml. Uruchamiam automatyczne wagowanie...")
+            from src.scripts.weight_dataset import process_concatenated_dataset
+            data_yaml = process_concatenated_dataset(REPO_ROOT / "data" / "data_concatenated")
 
     data_yaml = Path(data_yaml)
+
+    # Sprawdzenie wag bazowych w outputs/weights/
+    base_model_path = WEIGHTS_DIR / model_name
+    if not Path(model_name).is_file() and base_model_path.is_file():
+        model_name = str(base_model_path)
 
     print("====================================================================")
     print(" 1. TRENING MODELU YOLOV8 (Z UWZGLĘDNIENIEM WAG)")
@@ -311,6 +325,7 @@ def trenuj_i_ewaluuj(
     print(f"[YOLOv8] Zbiór danych:           {data_yaml}")
     print(f"[YOLOv8] Model bazowy:           {model_name}")
     print(f"[YOLOv8] Parametry:              Epoki: {epochs}, Imgsz: {imgsz}, Batch: {batch}, Cache: {cache}, Optimizer: {optimizer}, Workers: {workers}")
+    print(f"[YOLOv8] Katalog wyjściowy runs: {RUNS_DIR}")
 
     best_weights_file = MODELS_DIR / "ragwort_yolov8_best.pt"
 
@@ -333,12 +348,17 @@ def trenuj_i_ewaluuj(
             device=device,
             optimizer=optimizer,
             cache=cache,
+            project=str(RUNS_DIR),
             name="ragwort_yolov8_weighted",
             exist_ok=True,
             verbose=True,
         )
 
-    print(f"\n[WAGI] Zapisano najlepsze wagi w: {best_weights_file}")
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        trained_best = RUNS_DIR / "ragwort_yolov8_weighted" / "weights" / "best.pt"
+        if trained_best.exists():
+            shutil.copy2(trained_best, best_weights_file)
+            print(f"\n[WAGI] Zapisano najlepsze wagi w: {best_weights_file}")
 
     print("\n====================================================================")
     print(" 2. WALIDACJA MODELU NA ZBIORZE TESTOWYM (YOLO Metrics)")

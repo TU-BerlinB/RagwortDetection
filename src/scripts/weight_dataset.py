@@ -1,481 +1,549 @@
 """
-weight_dataset.py
+weight_dataset.py - Skrypt do automatycznego wagowania danych dla RagwortDetection.
 
-Skrypt nakladajacy wagi na zdjecia treningowe w zbiorach YOLO / COCO.
-Umozliwia zrownowazenie zbioru, w ktorym jest malo zdjec idealnych (wysokiej jakosci,
-zrobionych z gory, idealne etykiety) oraz duzo zdjec slabej jakosci.
+Zgodnie ze standardem projektu, wszystkie wygenerowane zbiory i manifesty
+zapisywane są w uporządkowanym katalogu `outputs/datasets/`:
+  - outputs/datasets/data_weighted/data_weighted.yaml  (dla YOLO)
+  - outputs/datasets/data_weighted/train_weighted.txt (manifest YOLO)
+  - outputs/datasets/data_weighted/val.txt            (manifest walidacyjny YOLO)
+  - outputs/datasets/coco/train/annotations.json      (dla DEIMv2 / DINOv3)
+  - outputs/datasets/coco/val/annotations.json        (dla DEIMv2 / DINOv3)
+  - outputs/datasets/coco/test/annotations.json       (dla DEIMv2 / DINOv3)
 
-Jak dziala wazenie probek (Sample Weighting):
-  W uczeniu maszynowym (SGD / Adam) zwiekszenie wagi probki W-krotnie jest
-  matematycznie rownowazne W-krotnemu zwiekszeniu czestotliwosci jej wystepowania
-  w epoce treningowej (Weighted Resampling / Oversampling).
-  
-  Dzieki temu model przy kazdej epoce widzi zdjecia idealne znacznie czesciej
-  (kazdorazowo z losowymi augmentacjami: obrot, skala, barwa, mozaika),
-  a gradienty z nich dominuja nad szumem ze zdjec niskiej jakosci.
-  Zarazem spelniony jest warunek: trenujemy na WSZYSTKICH dostepnych zdjeciach.
-
-Mozliwosci wskazania zdjec idealnych:
-  1. Plik tekstowy z lista nazw:       --ideal-list ideal_images.txt
-  2. Wzorzec w nazwie (regex/prefix):  --ideal-pattern "ragwort*"
-  3. Osobny folder ze zdjeciami:       --ideal-dir path/to/ideal/
-  4. Plik CSV z wagami per plik:       --weights-csv weights.csv
-  5. Tryb interaktywny / szablon:      --create-template
-
-Wyjscie:
-  - train_weighted.txt  (lista sciezek do zdjec z uwzglednieniem powtorzen wagowych)
-  - data_weighted.yaml  (gotowy plik konfiguracji YOLO z wazonym zbiorem)
-  - weights_summary.json (statystyki wag i rozkladu)
-  - opcjonalnie zmaterializowany folder lub wazony COCO JSON dla DEIM/DINO.
+Użycie:
+  python src/scripts/weight_dataset.py
+  python src/scripts/weight_dataset.py --good-weight 15 --other-weight 1
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
-import fnmatch
 import json
 import os
 import shutil
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
+from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+VALID_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+
+DEFAULT_CONCAT_DIR = REPO_ROOT / "data" / "data_concatenated"
+DEFAULT_DATASETS_OUT = REPO_ROOT / "outputs" / "datasets"
 
 
-def find_dataset_images(dataset_dir: Path, split: str = "train") -> List[Path]:
-    """Wyszukuje wszystkie obrazy w danym splicie zbioru YOLO."""
-    candidates = [
-        dataset_dir / split / "images",
-        dataset_dir / "images" / split,
-        dataset_dir / split,
-    ]
-    img_dir = None
-    for c in candidates:
-        if c.exists() and c.is_dir():
-            img_dir = c
-            break
+def convert_voc_xml_to_yolo_txt(xml_path: Path, output_txt: Path) -> bool:
+    """Konwertuje etykiety z formatu Pascal VOC XML na format YOLO TXT (znormalizowany)."""
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
 
-    if img_dir is None:
-        raise FileNotFoundError(f"Nie znaleziono katalogu zdjec dla splitu '{split}' w {dataset_dir}")
+        size = root.find("size")
+        if size is None:
+            return False
+        width = float(size.find("width").text)
+        height = float(size.find("height").text)
+        if width <= 0 or height <= 0:
+            return False
 
-    valid_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
-    images = [p for p in img_dir.iterdir() if p.suffix.lower() in valid_exts]
-    return sorted(images)
+        yolo_lines = []
+        for obj in root.findall("object"):
+            name = (obj.find("name").text or "").lower()
+            cls_id = 0 if any(k in name for k in ["ragwort", "senecio", "chwast", "jakob"]) else 1
+
+            bndbox = obj.find("bndbox")
+            if bndbox is None:
+                continue
+
+            xmin = float(bndbox.find("xmin").text)
+            ymin = float(bndbox.find("ymin").text)
+            xmax = float(bndbox.find("xmax").text)
+            ymax = float(bndbox.find("ymax").text)
+
+            xc = ((xmin + xmax) / 2.0) / width
+            yc = ((ymin + ymax) / 2.0) / height
+            w = (xmax - xmin) / width
+            h = (ymax - ymin) / height
+
+            xc = max(0.0, min(1.0, xc))
+            yc = max(0.0, min(1.0, yc))
+            w = max(0.0, min(1.0, w))
+            h = max(0.0, min(1.0, h))
+
+            yolo_lines.append(f"{cls_id} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
+
+        output_txt.write_text("\n".join(yolo_lines) + "\n", encoding="utf-8")
+        return True
+    except Exception:
+        output_txt.write_text("", encoding="utf-8")
+        return False
 
 
-def load_ideal_set(
-    ideal_list_file: Optional[Path] = None,
-    ideal_dir: Optional[Path] = None,
-    ideal_pattern: Optional[str] = None,
-    weights_csv: Optional[Path] = None,
-) -> Tuple[Set[str], Dict[str, float]]:
-    """
-    Zwraca:
-      - zbior nazw plikow oznaczonych jako 'idealne'
-      - slownik bezposrednich wag {nazwa_pliku: waga} (jesli podano CSV)
-    """
-    ideal_filenames: Set[str] = set()
-    custom_weights: Dict[str, float] = {}
-
-    # 1. Z pliku tekstowego (jedna nazwa w wierszu)
-    if ideal_list_file and ideal_list_file.exists():
-        with open(ideal_list_file, "r", encoding="utf-8") as f:
-            for line in f:
-                clean = line.strip()
-                if clean and not clean.startswith("#"):
-                    ideal_filenames.add(Path(clean).name)
-        print(f"[Wagi] Wczytano {len(ideal_filenames)} idealnych zdjec z: {ideal_list_file}")
-
-    # 2. Z katalogu z idealnymi zdjeciami
-    if ideal_dir and ideal_dir.exists():
-        for p in ideal_dir.iterdir():
-            if p.is_file():
-                ideal_filenames.add(p.name)
-        print(f"[Wagi] Dodano zdjecia z folderu idealnych: {ideal_dir} (lacznie: {len(ideal_filenames)})")
-
-    # 3. Z pliku CSV (filename, weight)
-    if weights_csv and weights_csv.exists():
-        with open(weights_csv, "r", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if not row or row[0].startswith("#"):
-                    continue
-                name = Path(row[0].strip()).name
+def sanitize_yolo_label_file(lbl_path: Path):
+    """Konwertuje ewentualne wiersze z poligonami (>5 kolumn) na standardowe ramki detekcji (cls xc yc w h)."""
+    if not lbl_path.is_file() or lbl_path.stat().st_size == 0:
+        return
+    try:
+        lines = lbl_path.read_text(encoding="utf-8").splitlines()
+        new_lines = []
+        modified = False
+        for line in lines:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            if len(parts) == 5:
+                new_lines.append(" ".join(parts))
+            elif len(parts) > 5:
+                modified = True
+                cls_id = parts[0]
                 try:
-                    w = float(row[1].strip())
-                    custom_weights[name] = w
-                except (IndexError, ValueError):
-                    custom_weights[name] = 1.0
-        print(f"[Wagi] Wczytano wagi dla {len(custom_weights)} plikow z CSV: {weights_csv}")
+                    coords = [float(v) for v in parts[1:]]
+                    xs = coords[0::2]
+                    ys = coords[1::2]
+                    if xs and ys:
+                        xmin, xmax = max(0.0, min(xs)), min(1.0, max(xs))
+                        ymin, ymax = max(0.0, min(ys)), min(1.0, max(ys))
+                        xc = (xmin + xmax) / 2.0
+                        yc = (ymin + ymax) / 2.0
+                        w = max(0.0, xmax - xmin)
+                        h = max(0.0, ymax - ymin)
+                        new_lines.append(f"{cls_id} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f}")
+                except Exception:
+                    continue
+        if modified:
+            lbl_path.write_text("\n".join(new_lines) + ("\n" if new_lines else ""), encoding="utf-8")
+    except Exception:
+        pass
 
-    return ideal_filenames, custom_weights
 
-
-def build_weighted_dataset(
-    data_yaml_path: Path,
-    ideal_filenames: Set[str],
-    custom_weights: Dict[str, float],
-    ideal_pattern: Optional[str] = None,
-    ideal_weight: int = 10,
-    poor_weight: int = 1,
-    output_dir: Optional[Path] = None,
-    materialize_images: bool = False,
-    update_coco_json: Optional[Path] = None,
-) -> Path:
-    """
-    Glowna logika tworzenia wazonego manifestu dla YOLO / DEIM.
-    """
-    data_yaml_path = Path(data_yaml_path).resolve()
-    if not data_yaml_path.exists():
-        raise FileNotFoundError(f"Brak pliku konfiguracji: {data_yaml_path}")
-
-    with open(data_yaml_path, "r", encoding="utf-8") as f:
-        yaml_cfg = yaml.safe_load(f)
-
-    # Ustal katalog bazowy zbioru
-    base_path_raw = yaml_cfg.get("path", "")
-    if base_path_raw:
-        base_path = Path(base_path_raw)
-        if not base_path.is_absolute():
-            base_path = (data_yaml_path.parent / base_path).resolve()
-            if not base_path.exists():
-                base_path = (REPO_ROOT / base_path_raw).resolve()
+def get_expected_label_path(img_path: Path) -> Path:
+    """Zwraca ścieżkę pliku etykiety, jakiej oczekuje YOLO (img2label_paths)."""
+    posix_path = img_path.resolve().as_posix()
+    sa, sb = "/images/", "/labels/"
+    if sa in posix_path:
+        lbl_str = sb.join(posix_path.rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt"
+        return Path(lbl_str)
     else:
-        base_path = data_yaml_path.parent
+        return img_path.parent / f"{img_path.stem}.txt"
 
-    print(f"[Wagi] Baza danych: {base_path}")
-    train_images = find_dataset_images(base_path, split="train")
-    print(f"[Wagi] Znaleziono {len(train_images)} unikalnych zdjec treningowych.")
 
-    if output_dir is None:
-        output_dir = base_path
-    output_dir.mkdir(parents=True, exist_ok=True)
+def ensure_label_exists_for_image(img_path: Path, possible_label_dirs: List[Path]) -> Path:
+    """Zapewnia, że dla danego zdjęcia istnieje plik etykiety .txt."""
+    target_lbl = get_expected_label_path(img_path)
+    stem = img_path.stem
 
-    # Obliczenie wag dla kazdego pliku
-    weighted_manifest_lines: List[str] = []
-    stats = {
-        "total_unique": len(train_images),
-        "ideal_count": 0,
-        "poor_count": 0,
-        "total_samples_per_epoch": 0,
-        "ideal_effective_share_pct": 0.0,
-        "weights_distribution": {},
+    if target_lbl.is_file():
+        if target_lbl.stat().st_size > 0:
+            sanitize_yolo_label_file(target_lbl)
+        return target_lbl
+
+    neighbor_txt = img_path.parent / f"{stem}.txt"
+    if neighbor_txt != target_lbl and neighbor_txt.is_file() and neighbor_txt.stat().st_size > 0:
+        target_lbl.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(neighbor_txt, target_lbl)
+            sanitize_yolo_label_file(target_lbl)
+            return target_lbl
+        except Exception:
+            return neighbor_txt
+
+    for d in possible_label_dirs:
+        if not d.exists():
+            continue
+
+        txt_cand = d / f"{stem}.txt"
+        if txt_cand.is_file() and txt_cand.stat().st_size > 0:
+            target_lbl.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(txt_cand, target_lbl)
+                sanitize_yolo_label_file(target_lbl)
+                return target_lbl
+            except Exception:
+                return txt_cand
+
+        xml_cand = d / f"{stem}.xml"
+        if xml_cand.is_file() and xml_cand.stat().st_size > 0:
+            target_lbl.parent.mkdir(parents=True, exist_ok=True)
+            if convert_voc_xml_to_yolo_txt(xml_cand, target_lbl):
+                return target_lbl
+
+    target_lbl.parent.mkdir(parents=True, exist_ok=True)
+    if not target_lbl.is_file():
+        target_lbl.write_text("", encoding="utf-8")
+    return target_lbl
+
+
+def export_coco_weighted_dataset(
+    concatenated_dir: Path,
+    train_felix: List[Path],
+    other_images: List[Path],
+    val_images: List[Path],
+    good_weight: int = 15,
+    other_weight: int = 1,
+    output_dir: Optional[Path] = None,
+) -> Dict[str, Path]:
+    """
+    Eksportuje zwagowany zbiór danych do formatu COCO Detection JSON (outputs/datasets/coco/).
+    Wartości file_name są relatywne do concatenated_dir (brak zbędnego powielania plików na dysku).
+    """
+    concatenated_dir = Path(concatenated_dir).resolve()
+    coco_root = output_dir or (DEFAULT_DATASETS_OUT / "coco")
+    (coco_root / "train").mkdir(parents=True, exist_ok=True)
+    (coco_root / "val").mkdir(parents=True, exist_ok=True)
+    (coco_root / "test").mkdir(parents=True, exist_ok=True)
+
+    categories = [{"id": 1, "name": "ragwort", "supercategory": "none"}]
+
+    def parse_img(img_path: Path) -> Tuple[int, int, List[List[float]]]:
+        try:
+            with Image.open(img_path) as im:
+                w, h = im.size
+        except Exception:
+            w, h = 640, 640
+
+        lbl_path = get_expected_label_path(img_path)
+        boxes: List[List[float]] = []
+        if lbl_path.is_file() and lbl_path.stat().st_size > 0:
+            for line in lbl_path.read_text(encoding="utf-8").splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    try:
+                        cls_id = int(parts[0])
+                        if cls_id == 0:  # ragwort
+                            xc, yc, bw, bh = map(float, parts[1:5])
+                            xmin = max(0.0, (xc - bw / 2.0) * w)
+                            ymin = max(0.0, (yc - bh / 2.0) * h)
+                            box_w = min(float(w) - xmin, bw * w)
+                            box_h = min(float(h) - ymin, bh * h)
+                            if box_w >= 1.0 and box_h >= 1.0:
+                                boxes.append([round(xmin, 2), round(ymin, 2), round(box_w, 2), round(box_h, 2)])
+                    except Exception:
+                        continue
+        return w, h, boxes
+
+    parsed_cache: Dict[Path, Tuple[int, int, List[List[float]]]] = {}
+
+    def get_info(p: Path) -> Tuple[int, int, List[List[float]]]:
+        if p not in parsed_cache:
+            parsed_cache[p] = parse_img(p)
+        return parsed_cache[p]
+
+    print("\n[COCO] Generowanie adnotacji COCO w outputs/datasets/coco/...")
+
+    # 1. Trening ze zwagowanymi danymi
+    train_coco = {"images": [], "annotations": [], "categories": categories}
+    train_img_id = 1
+    train_ann_id = 1
+
+    for p in train_felix:
+        w, h, boxes = get_info(p)
+        rel_path = p.relative_to(concatenated_dir).as_posix()
+        for _ in range(good_weight):
+            train_coco["images"].append({
+                "id": train_img_id,
+                "file_name": rel_path,
+                "width": w,
+                "height": h,
+            })
+            for box in boxes:
+                train_coco["annotations"].append({
+                    "id": train_ann_id,
+                    "image_id": train_img_id,
+                    "category_id": 1,
+                    "bbox": box,
+                    "area": round(box[2] * box[3], 2),
+                    "iscrowd": 0,
+                })
+                train_ann_id += 1
+            train_img_id += 1
+
+    for p in other_images:
+        w, h, boxes = get_info(p)
+        rel_path = p.relative_to(concatenated_dir).as_posix()
+        for _ in range(other_weight):
+            train_coco["images"].append({
+                "id": train_img_id,
+                "file_name": rel_path,
+                "width": w,
+                "height": h,
+            })
+            for box in boxes:
+                train_coco["annotations"].append({
+                    "id": train_ann_id,
+                    "image_id": train_img_id,
+                    "category_id": 1,
+                    "bbox": box,
+                    "area": round(box[2] * box[3], 2),
+                    "iscrowd": 0,
+                })
+                train_ann_id += 1
+            train_img_id += 1
+
+    # 2. Walidacja (bez powtórzeń)
+    val_coco = {"images": [], "annotations": [], "categories": categories}
+    val_img_id = 1
+    val_ann_id = 1
+    for p in val_images:
+        w, h, boxes = get_info(p)
+        rel_path = p.relative_to(concatenated_dir).as_posix()
+        val_coco["images"].append({
+            "id": val_img_id,
+            "file_name": rel_path,
+            "width": w,
+            "height": h,
+        })
+        for box in boxes:
+            val_coco["annotations"].append({
+                "id": val_ann_id,
+                "image_id": val_img_id,
+                "category_id": 1,
+                "bbox": box,
+                "area": round(box[2] * box[3], 2),
+                "iscrowd": 0,
+            })
+            val_ann_id += 1
+        val_img_id += 1
+
+    train_json_path = coco_root / "train" / "annotations.json"
+    val_json_path = coco_root / "val" / "annotations.json"
+    test_json_path = coco_root / "test" / "annotations.json"
+
+    train_json_path.write_text(json.dumps(train_coco, indent=2), encoding="utf-8")
+    val_json_path.write_text(json.dumps(val_coco, indent=2), encoding="utf-8")
+    test_json_path.write_text(json.dumps(val_coco, indent=2), encoding="utf-8")
+
+    # Symlinki do zdjęć w outputs/datasets/coco/{split}/images
+    for split_name in ["train", "val", "test"]:
+        images_link = coco_root / split_name / "images"
+        if not images_link.exists() and not images_link.is_symlink():
+            try:
+                images_link.symlink_to(Path("../../../../data/data_concatenated"))
+            except Exception:
+                pass
+
+    # Zapis w outputs/combined_dataset_coco dla kompatybilności wstecznej z configiem DEIM
+    legacy_root = REPO_ROOT / "outputs" / "combined_dataset_coco"
+    for split_name, json_data in [("train", train_coco), ("val", val_coco), ("test", val_coco)]:
+        split_dir = legacy_root / split_name
+        split_dir.mkdir(parents=True, exist_ok=True)
+        (split_dir / "annotations.json").write_text(json.dumps(json_data, indent=2), encoding="utf-8")
+        link = split_dir / "images"
+        if not link.exists() and not link.is_symlink():
+            try:
+                link.symlink_to(Path("../../../data/data_concatenated"))
+            except Exception:
+                pass
+
+    print(f"[COCO] Trening COCO: {len(train_coco['images'])} próbek, {len(train_coco['annotations'])} ramek")
+    print(f"[COCO] Walidacja COCO: {len(val_coco['images'])} próbek, {len(val_coco['annotations'])} ramek")
+    print(f"[COCO] Zapisano w: {coco_root}")
+
+    return {
+        "train": train_json_path,
+        "val": val_json_path,
+        "test": test_json_path,
+        "coco_root": coco_root,
     }
 
-    per_image_weights: Dict[str, int] = {}
 
-    for img_path in train_images:
-        fname = img_path.name
-        is_ideal = False
+def process_concatenated_dataset(
+    concatenated_dir: Path,
+    good_weight: int = 15,
+    other_weight: int = 1,
+    val_felix_ratio: float = 0.10,
+    export_coco: bool = True,
+    output_datasets_dir: Optional[Path] = None,
+) -> Path:
+    """
+    Wagowanie zbioru data_concatenated i zapis do outputs/datasets/.
+    """
+    concatenated_dir = Path(concatenated_dir).resolve()
+    out_dir = output_datasets_dir or DEFAULT_DATASETS_OUT
+    yolo_dir = out_dir / "data_weighted"
+    yolo_dir.mkdir(parents=True, exist_ok=True)
 
-        # Sprawdz bezposrednia wage z CSV
-        if fname in custom_weights:
-            w = max(1, int(round(custom_weights[fname])))
-            is_ideal = (w > poor_weight)
-        # Sprawdz liste idealnych
-        elif fname in ideal_filenames:
-            w = ideal_weight
-            is_ideal = True
-        # Sprawdz pattern (np. 'ragwort*' lub 'ideal*')
-        elif ideal_pattern and fnmatch.fnmatch(fname, ideal_pattern):
-            w = ideal_weight
-            is_ideal = True
-        else:
-            w = poor_weight
-            is_ideal = False
+    print("=" * 75)
+    print(" WAGOWANIE ZBIORU DANYCH (data_concatenated)")
+    print(f" Katalog wejściowy: {concatenated_dir}")
+    print(f" Katalog wyjściowy: {out_dir}")
+    print("=" * 75)
 
-        per_image_weights[fname] = w
-        if is_ideal:
-            stats["ideal_count"] += 1
-        else:
-            stats["poor_count"] += 1
+    felix_images: List[Path] = []
+    other_images: List[Path] = []
+    val_images: List[Path] = []
 
-        # Uzyj sciezki ze slaszami (bezpieczne dla YOLO na Windows i Linux)
-        clean_path_str = str(img_path.resolve()).replace("\\", "/")
+    # 1. Felix_data (GOOD)
+    felix_dir = concatenated_dir / "Felix_data"
+    felix_label_dirs = []
+    if felix_dir.exists():
+        for d in felix_dir.rglob("*"):
+            if d.is_dir() and any(k in d.name.lower() for k in ["annot", "label"]):
+                felix_label_dirs.append(d)
 
-        # Powtorz sciezke W razy w manifeście
-        for _ in range(w):
-            weighted_manifest_lines.append(clean_path_str)
+        for p in felix_dir.rglob("*"):
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTS:
+                felix_images.append(p)
+                ensure_label_exists_for_image(p, felix_label_dirs)
 
-    stats["total_samples_per_epoch"] = len(weighted_manifest_lines)
-    ideal_total_slots = stats["ideal_count"] * ideal_weight
-    if stats["total_samples_per_epoch"] > 0:
-        stats["ideal_effective_share_pct"] = round(
-            (ideal_total_slots / stats["total_samples_per_epoch"]) * 100, 2
+    # 2. Walidacja / test
+    test_dir = concatenated_dir / "combined_dataset" / "test" / "images"
+    test_label_dirs = [concatenated_dir / "combined_dataset" / "test" / "labels"]
+    if test_dir.exists():
+        for p in test_dir.iterdir():
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTS:
+                val_images.append(p)
+                ensure_label_exists_for_image(p, test_label_dirs)
+
+    # 3. Pozostałe (OTHER)
+    comb_train = concatenated_dir / "combined_dataset" / "train" / "images"
+    comb_train_lbls = [concatenated_dir / "combined_dataset" / "train" / "labels"]
+    if comb_train.exists():
+        for p in comb_train.iterdir():
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTS:
+                other_images.append(p)
+                ensure_label_exists_for_image(p, comb_train_lbls)
+
+    synth_dir = concatenated_dir / "synthetic" / "images"
+    synth_lbls = [concatenated_dir / "synthetic" / "labels"]
+    if synth_dir.exists():
+        for p in synth_dir.iterdir():
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTS:
+                other_images.append(p)
+                ensure_label_exists_for_image(p, synth_lbls)
+
+    split_dir = concatenated_dir / "synthetic_dataset_split"
+    if split_dir.exists():
+        for p in split_dir.rglob("*"):
+            if p.is_file() and p.suffix.lower() in VALID_IMAGE_EXTS:
+                if p not in other_images and p not in felix_images and p not in val_images:
+                    other_images.append(p)
+                    lbl_dirs = [p.parent.parent / "labels", p.parent / "labels"]
+                    ensure_label_exists_for_image(p, lbl_dirs)
+
+    # Wydzielenie próbki Felix_data do walidacji
+    import random
+    random.seed(42)
+    shuffled_felix = list(felix_images)
+    random.shuffle(shuffled_felix)
+
+    n_val_felix = max(1, int(len(shuffled_felix) * val_felix_ratio)) if len(shuffled_felix) > 10 else 0
+    val_felix = shuffled_felix[:n_val_felix]
+    train_felix = shuffled_felix[n_val_felix:]
+    val_images.extend(val_felix)
+
+    # Czyszczenie starych plików cache
+    for cache_file in concatenated_dir.rglob("*.cache"):
+        try:
+            cache_file.unlink()
+        except Exception:
+            pass
+
+    # Przygotowanie manifestów YOLO (ze ścieżkami bezwzględnymi lub relatywnymi)
+    train_lines: List[str] = []
+    for p in train_felix:
+        rel = p.resolve().as_posix()
+        for _ in range(good_weight):
+            train_lines.append(rel)
+
+    for p in other_images:
+        rel = p.resolve().as_posix()
+        for _ in range(other_weight):
+            train_lines.append(rel)
+
+    val_lines: List[str] = [p.resolve().as_posix() for p in val_images]
+
+    train_txt_path = (yolo_dir / "train_weighted.txt").resolve()
+    val_txt_path = (yolo_dir / "val.txt").resolve()
+    train_txt_path.write_text("\n".join(train_lines) + "\n", encoding="utf-8")
+    val_txt_path.write_text("\n".join(val_lines) + "\n", encoding="utf-8")
+
+    yaml_data = {
+        "train": str(train_txt_path),
+        "val": str(val_txt_path),
+        "test": str(val_txt_path),
+        "nc": 2,
+        "names": {0: "ragwort", 1: "objects"},
+    }
+    yaml_path = yolo_dir / "data_weighted.yaml"
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        yaml.dump(yaml_data, f, sort_keys=False, allow_unicode=True)
+
+    # Kopia do data/data_concatenated/ dla wygody
+    try:
+        shutil.copy2(yaml_path, concatenated_dir / "data_weighted.yaml")
+        shutil.copy2(train_txt_path, concatenated_dir / "train_weighted.txt")
+        shutil.copy2(val_txt_path, concatenated_dir / "val.txt")
+    except Exception:
+        pass
+
+    # Eksport do COCO
+    coco_paths = {}
+    if export_coco:
+        coco_paths = export_coco_weighted_dataset(
+            concatenated_dir=concatenated_dir,
+            train_felix=train_felix,
+            other_images=other_images,
+            val_images=val_images,
+            good_weight=good_weight,
+            other_weight=other_weight,
+            output_dir=out_dir / "coco",
         )
 
-    # Zapisz manifest train_weighted.txt
-    manifest_path = output_dir / "train_weighted.txt"
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(weighted_manifest_lines) + "\n")
-    print(f"\n[Wagi] Utworzono manifest wagowy: {manifest_path}")
-    print(f"       -> Liczba probek na epoke: {stats['total_samples_per_epoch']} (wczesniej: {stats['total_unique']})")
-    print(f"       -> Zdjecia idealne ({stats['ideal_count']} szt.) stanowia teraz {stats['ideal_effective_share_pct']}% gradientow w kazdej epoce!")
+    # Statystyki
+    total_good_train = len(train_felix)
+    total_other_train = len(other_images)
+    weighted_good = total_good_train * good_weight
+    weighted_other = total_other_train * other_weight
+    total_steps = weighted_good + weighted_other
+    pct_good = (weighted_good / total_steps * 100) if total_steps > 0 else 0
 
-    # Zbuduj nowy data_weighted.yaml
-    weighted_yaml_cfg = dict(yaml_cfg)
-    weighted_yaml_cfg["path"] = str(base_path.resolve()).replace("\\", "/")
-    weighted_yaml_cfg["train"] = str(manifest_path.resolve()).replace("\\", "/")
+    print("\n" + "=" * 75)
+    print(" SUKCES! ZBIÓR ZOSTAŁ ZWAGOWANY:")
+    print("=" * 75)
+    print("1. DANE IDEALNE (Felix_data):")
+    print(f"   - Unikalne zdjęcia:        {total_good_train} szt.")
+    print(f"   - Waga (mnożnik):          {good_weight}x")
+    print(f"   - Próbek w epoce:          {weighted_good} kroków")
+    print("2. DANE POZOSTAŁE (other / synthetic):")
+    print(f"   - Unikalne zdjęcia:        {total_other_train} szt.")
+    print(f"   - Waga:                    {other_weight}x")
+    print(f"   - Próbek w epoce:          {weighted_other} kroków")
+    print("3. BILANS TRENINGU:")
+    print(f"   - Łącznie kroków w epoce:  {total_steps}")
+    print(f"   - WPŁYW DANYCH FELIXA:     {pct_good:.1f}% WSZYSTKICH GRADIENTÓW W KAŻDEJ EPOCE!")
+    print(f"4. WALIDACJA (val.txt):       {len(val_images)} szt.")
+    print("5. ZAPISANE STRUKTURY W outputs/datasets/:")
+    print(f"   - Konfiguracja YOLO:       {yaml_path}")
+    print(f"   - Manifest treningowy:     {train_txt_path}")
+    print(f"   - Manifest walidacyjny:    {val_txt_path}")
+    if coco_paths:
+        print(f"   - Adnotacje COCO (DINO):   {coco_paths.get('train')}")
+    print("=" * 75)
+    print("\n>>> URUCHOMIENIE TRENINGU:")
+    print(f"    YOLO: python src/train_evaluation/yolo_eval.py --epochs 60 --batch 16 --imgsz 640")
+    print(f"    DINO: python src/train_evaluation/DINO_DEIM_eval.py --epochs 30 --batch-size 4\n")
 
-    weighted_yaml_path = output_dir / "data_weighted.yaml"
-    with open(weighted_yaml_path, "w", encoding="utf-8") as f:
-        yaml.dump(weighted_yaml_cfg, f, sort_keys=False, allow_unicode=True)
-    print(f"[Wagi] Zapisano wazona konfiguracje YOLO: {weighted_yaml_path}")
-
-    # Zapisz raport podsumowujacy JSON
-    summary_path = output_dir / "weights_summary.json"
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(stats, f, indent=2)
-
-    # Opcjonalnie: Materializacja fizyczna (np. dla loaderow niewspierajacych txt)
-    if materialize_images:
-        mat_img_dir = output_dir / "train_weighted_images"
-        mat_lbl_dir = output_dir / "train_weighted_labels"
-        mat_img_dir.mkdir(parents=True, exist_ok=True)
-        mat_lbl_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[Wagi] Materializacja fizycznych kopii/symlinkow do: {mat_img_dir}...")
-
-        idx = 0
-        for img_path in train_images:
-            fname = img_path.name
-            w = per_image_weights[fname]
-            stem = img_path.stem
-            ext = img_path.suffix
-
-            # Etykieta
-            lbl_candidate = img_path.parent.parent / "labels" / f"{stem}.txt"
-            if not lbl_candidate.exists():
-                lbl_candidate = img_path.with_suffix(".txt")
-
-            for rep in range(w):
-                target_img_name = f"{stem}_w{rep}{ext}"
-                target_lbl_name = f"{stem}_w{rep}.txt"
-                
-                # Proba stworzenia hardlinku (oszczedza 100% dysku), w razie bledu kopiowanie
-                target_img = mat_img_dir / target_img_name
-                if not target_img.exists():
-                    try:
-                        os.link(img_path, target_img)
-                    except Exception:
-                        shutil.copy2(img_path, target_img)
-
-                if lbl_candidate.exists():
-                    target_lbl = mat_lbl_dir / target_lbl_name
-                    if not target_lbl.exists():
-                        try:
-                            os.link(lbl_candidate, target_lbl)
-                        except Exception:
-                            shutil.copy2(lbl_candidate, target_lbl)
-                idx += 1
-        print(f"[Wagi] Zmaterializowano {idx} plikow obrazow i etykiet.")
-
-    # Opcjonalnie: Wazenie COCO JSON (dla DEIM/DINO)
-    if update_coco_json and Path(update_coco_json).exists():
-        update_coco_annotations(Path(update_coco_json), per_image_weights, output_dir)
-
-    return weighted_yaml_path
-
-
-def update_coco_annotations(
-    coco_json_path: Path,
-    weights_map: Dict[str, int],
-    output_dir: Path,
-) -> Path:
-    """Duplikuje wpisy w pliku COCO instances_train.json wg podanych wag."""
-    print(f"[COCO] Aktualizacja wag w COCO JSON: {coco_json_path}")
-    with open(coco_json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    images = data.get("images", [])
-    annotations = data.get("annotations", [])
-
-    # Mapowanie image_id -> lista adnotacji
-    img_to_anns: Dict[int, List[dict]] = {}
-    for ann in annotations:
-        iid = ann["image_id"]
-        img_to_anns.setdefault(iid, []).append(ann)
-
-    new_images = []
-    new_annotations = []
-    next_img_id = max((img["id"] for img in images), default=0) + 1
-    next_ann_id = max((ann["id"] for ann in annotations), default=0) + 1
-
-    for img in images:
-        fname = Path(img["file_name"]).name
-        w = weights_map.get(fname, 1)
-
-        # Oryginalny wpis
-        new_images.append(img)
-        for ann in img_to_anns.get(img["id"], []):
-            new_annotations.append(ann)
-
-        # Dodatkowe powtorzenia wg wagi
-        for rep in range(1, w):
-            cloned_img = dict(img)
-            cloned_img["id"] = next_img_id
-            new_images.append(cloned_img)
-
-            for ann in img_to_anns.get(img["id"], []):
-                cloned_ann = dict(ann)
-                cloned_ann["id"] = next_ann_id
-                cloned_ann["image_id"] = next_img_id
-                new_annotations.append(cloned_ann)
-                next_ann_id += 1
-
-            next_img_id += 1
-
-    weighted_coco = dict(data)
-    weighted_coco["images"] = new_images
-    weighted_coco["annotations"] = new_annotations
-
-    out_coco_path = output_dir / "instances_train_weighted.json"
-    with open(out_coco_path, "w", encoding="utf-8") as f:
-        json.dump(weighted_coco, f)
-
-    print(f"[COCO] Zapisano wazony plik COCO: {out_coco_path} (obrazow: {len(new_images)})")
-    return out_coco_path
-
-
-def create_template_file(data_yaml_path: Path, output_file: Path = Path("ideal_images_template.txt")):
-    """Generuje plik szablonu z wszystkimi zdjeciami, ulatwiajac uzytkownikowi zaznaczenie idealnych."""
-    with open(data_yaml_path, "r", encoding="utf-8") as f:
-        yaml_cfg = yaml.safe_load(f)
-
-    base_path_raw = yaml_cfg.get("path", "")
-    base_path = Path(base_path_raw)
-    if not base_path.is_absolute():
-        base_path = (data_yaml_path.parent / base_path).resolve()
-        if not base_path.exists():
-            base_path = (REPO_ROOT / base_path_raw).resolve()
-
-    train_images = find_dataset_images(base_path, split="train")
-
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write("# SZABLON WYBORU ZDJEC IDEALNYCH\n")
-        f.write("# Zostaw w tym pliku tylko te zdjecia, ktore sa 'idealne' (np. ladny widok z gory),\n")
-        f.write("# albo dopisz wage po przecinku: nazwa.jpg, 15\n")
-        f.write("# Linie zaczynajace sie od # sa ignorowane.\n\n")
-        for img in train_images:
-            f.write(f"# {img.name}\n")
-
-    print(f"[Szablon] Wygenerowano szablon z {len(train_images)} zdjeciami w: {output_file}")
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Naklada wagi na zdjecia treningowe w zbiorze YOLO/COCO (Weighted Resampling)."
-    )
-    parser.add_argument(
-        "--data",
-        type=Path,
-        default=REPO_ROOT / "data" / "combined_dataset" / "data.yaml",
-        help="Sciezka do data.yaml (np. data/combined_dataset/data.yaml lub data/ragwort_segmentation.yaml)",
-    )
-    parser.add_argument(
-        "--ideal-list",
-        type=Path,
-        help="Sciezka do pliku .txt z lista nazw idealnych zdjec (jedno na wiersz)",
-    )
-    parser.add_argument(
-        "--ideal-dir",
-        type=Path,
-        help="Katalog zawierajacy idealne zdjecia",
-    )
-    parser.add_argument(
-        "--ideal-pattern",
-        type=str,
-        default=None,
-        help="Wzorzec nazwy dla idealnych zdjec (np. 'ragwort*' lub '*topdown*')",
-    )
-    parser.add_argument(
-        "--weights-csv",
-        type=Path,
-        help="Plik CSV z wagami per zdjecie (format: filename, weight)",
-    )
-    parser.add_argument(
-        "--ideal-weight",
-        type=int,
-        default=10,
-        help="Mnoznik wagi dla zdjec idealnych (domyslnie: 10x czesciej w epoce)",
-    )
-    parser.add_argument(
-        "--poor-weight",
-        type=int,
-        default=1,
-        help="Waga dla pozostalych (slabych) zdjec (domyslnie: 1)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        help="Gdzie zapisac train_weighted.txt i data_weighted.yaml (domyslnie obok data.yaml)",
-    )
-    parser.add_argument(
-        "--materialize",
-        action="store_true",
-        help="Tworzy fizyczny folder z kopiami/hardlinkami dla frameworkow wymagajacych folderu",
-    )
-    parser.add_argument(
-        "--coco-json",
-        type=Path,
-        help="Opcjonalna sciezka do instances_train.json dla DEIM/DINO (tworzy instances_train_weighted.json)",
-    )
-    parser.add_argument(
-        "--create-template",
-        action="store_true",
-        help="Tworzy plik ideal_images_template.txt z lista wszystkich plikow do uzupelnienia",
-    )
-    return parser.parse_args()
+    return yaml_path
 
 
 def main():
-    args = parse_args()
+    parser = argparse.ArgumentParser(description="Wagowanie danych i eksport do outputs/datasets/.")
+    parser.add_argument("--concatenated-dir", type=Path, default=DEFAULT_CONCAT_DIR, help="Ścieżka do folderu data_concatenated")
+    parser.add_argument("--good-weight", type=int, default=15, help="Waga dla zdjęć idealnych Felix_data (domyślnie: 15x)")
+    parser.add_argument("--other-weight", type=int, default=1, help="Waga dla pozostałych zdjęć (domyślnie: 1x)")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_DATASETS_OUT, help="Katalog wyjściowy (domyślnie: outputs/datasets)")
+    args = parser.parse_args()
 
-    if args.create_template:
-        out_tmpl = Path("ideal_images_template.txt")
-        create_template_file(args.data, out_tmpl)
-        print(f"\nOtworz plik '{out_tmpl}', odkomentuj idealne zdjecia i uruchom:")
-        print(f"python src/scripts/weight_dataset.py --data {args.data} --ideal-list {out_tmpl} --ideal-weight 10")
-        return
-
-    # Wczytanie informacji o zdjeciach idealnych
-    ideal_filenames, custom_weights = load_ideal_set(
-        ideal_list_file=args.ideal_list,
-        ideal_dir=args.ideal_dir,
-        ideal_pattern=args.ideal_pattern,
-        weights_csv=args.weights_csv,
+    process_concatenated_dataset(
+        concatenated_dir=args.concatenated_dir,
+        good_weight=args.good_weight,
+        other_weight=args.other_weight,
+        output_datasets_dir=args.output_dir,
     )
-
-    # Domyslny fallback: jesli uzytkownik nic nie podal, sprawdz czy sa zdjecia z prefiksem 'ragwort*'
-    pattern = args.ideal_pattern
-    if not ideal_filenames and not custom_weights and not pattern:
-        print("[Info] Nie podano --ideal-list ani --ideal-pattern.")
-        print("       Sprawdzam czy wystepuja pliki z wzorcem 'ragwort*'...")
-        pattern = "ragwort*"
-
-    weighted_yaml = build_weighted_dataset(
-        data_yaml_path=args.data,
-        ideal_filenames=ideal_filenames,
-        custom_weights=custom_weights,
-        ideal_pattern=pattern,
-        ideal_weight=args.ideal_weight,
-        poor_weight=args.poor_weight,
-        output_dir=args.output_dir,
-        materialize_images=args.materialize,
-        update_coco_json=args.coco_json,
-    )
-
-    print("\n" + "=" * 70)
-    print(" GOTOWE! JAK TRENOWAC MODEL Z WAGAMI:")
-    print("=" * 70)
-    print(f"1. Standardowe YOLOv8 CLI:")
-    print(f"   yolo detect train data=\"{weighted_yaml}\" epochs=30 imgsz=640 batch=8")
-    print(f"\n2. W Twoim skrypcie Python / segmentacji:")
-    print(f"   python src/train_evaluation/train_ragwort_segmentation.py --data \"{weighted_yaml}\" --epochs 30")
-    print("=" * 70 + "\n")
 
 
 if __name__ == "__main__":

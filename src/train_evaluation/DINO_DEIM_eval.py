@@ -57,12 +57,17 @@ if str(DEIMV2_ROOT) not in sys.path:
     sys.path.insert(0, str(DEIMV2_ROOT))
 
 DEFAULT_CONFIG = DEIMV2_ROOT / "configs" / "deimv2" / "deimv2_dinov3_ragwort.yml"
-MODELS_DIR = PROJECT_ROOT / "models"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+RUNS_DIR = OUTPUTS_DIR / "runs" / "deim" / "ragwort_deimv2_weighted"
+MODELS_DIR = OUTPUTS_DIR / "models"
+WEIGHTS_DIR = OUTPUTS_DIR / "weights"
+EVAL_DIR = OUTPUTS_DIR / "evaluations" / "deim"
+PREDICTIONS_DIR = OUTPUTS_DIR / "predictions" / "deim"
 EXTERNAL_DIR = PROJECT_ROOT / "data" / "external_test_images"
-RESULTS_DIR = PROJECT_ROOT / "data" / "external_test_results"
+RESULTS_DIR = PREDICTIONS_DIR / "external_test_results"
 DATA_CONCAT_DIR = PROJECT_ROOT / "data" / "data_concatenated"
-COCO_DIR = DATA_CONCAT_DIR / "coco"
-LEGACY_COCO_DIR = PROJECT_ROOT / "outputs" / "combined_dataset_coco"
+DATASETS_COCO_DIR = OUTPUTS_DIR / "datasets" / "coco"
+LEGACY_COCO_DIR = OUTPUTS_DIR / "combined_dataset_coco"
 
 # Zewnętrzne zdjęcia testowe (takie same jak w YOLO)
 EXTERNAL_IMAGES = [
@@ -117,20 +122,20 @@ def parse_args() -> argparse.Namespace:
 
 def ensure_weighted_coco_dataset(good_weight: int = 15, other_weight: int = 1, force: bool = False) -> Dict[str, Path]:
     """Upewnia się, że zwagowany zbiór COCO istnieje; w razie potrzeby generuje go przez weight_dataset.py."""
-    train_ann = LEGACY_COCO_DIR / "train" / "annotations.json"
-    val_ann = LEGACY_COCO_DIR / "val" / "annotations.json"
+    train_ann = DATASETS_COCO_DIR / "train" / "annotations.json"
+    val_ann = DATASETS_COCO_DIR / "val" / "annotations.json"
 
     if not force and train_ann.is_file() and val_ann.is_file():
         return {
             "train": train_ann,
             "val": val_ann,
-            "test": LEGACY_COCO_DIR / "test" / "annotations.json",
-            "img_folder": LEGACY_COCO_DIR,
+            "test": DATASETS_COCO_DIR / "test" / "annotations.json",
+            "img_folder": DATASETS_COCO_DIR,
         }
 
     print("\n[DINO_DEIM] Zwagowany zbiór COCO nie został znaleziony lub zażądano przebudowy.")
     print("[DINO_DEIM] Uruchamiam automatyczne wagowanie danych z data/data_concatenated...")
-    from weight_dataset import process_concatenated_dataset
+    from src.scripts.weight_dataset import process_concatenated_dataset
 
     process_concatenated_dataset(
         concatenated_dir=DATA_CONCAT_DIR,
@@ -142,15 +147,16 @@ def ensure_weighted_coco_dataset(good_weight: int = 15, other_weight: int = 1, f
     return {
         "train": train_ann,
         "val": val_ann,
-        "test": LEGACY_COCO_DIR / "test" / "annotations.json",
-        "img_folder": LEGACY_COCO_DIR,
+        "test": DATASETS_COCO_DIR / "test" / "annotations.json",
+        "img_folder": DATASETS_COCO_DIR,
     }
 
 
 def update_items(args: argparse.Namespace) -> list[str]:
     """Generuje listę nadpisań parametrów konfiguracji DEIMv2."""
-    coco_root = LEGACY_COCO_DIR
-    output_dir = PROJECT_ROOT / "outputs" / "checkpoints" / "deimv2_dinov3_ragwort"
+    # Preferuj outputs/datasets/coco, w rezerwie outputs/combined_dataset_coco
+    coco_root = DATASETS_COCO_DIR if (DATASETS_COCO_DIR / "train" / "annotations.json").is_file() else LEGACY_COCO_DIR
+    output_dir = RUNS_DIR
 
     items: list[str] = [
         f"output_dir={output_dir}",
@@ -295,8 +301,8 @@ def ewaluacja_modelu_deim(
     conf_threshold: float = 0.25,
 ) -> Dict[str, float]:
     """Oblicza Precision, Recall, F1 oraz zapisuje błędy FP/FN dla DEIM."""
-    katalog_fp = PROJECT_ROOT / "bledy_False_Positives"
-    katalog_fn = PROJECT_ROOT / "bledy_False_Negatives"
+    katalog_fp = EVAL_DIR / "bledy_False_Positives"
+    katalog_fn = EVAL_DIR / "bledy_False_Negatives"
     katalog_fp.mkdir(parents=True, exist_ok=True)
     katalog_fn.mkdir(parents=True, exist_ok=True)
 
@@ -532,7 +538,7 @@ def main() -> None:
         print("\n[SUKCES] Smoke test zakończony pomyślnie!")
         return
 
-    output_ckpt_dir = PROJECT_ROOT / "outputs" / "checkpoints" / "deimv2_dinov3_ragwort"
+    output_ckpt_dir = RUNS_DIR
     best_weights_file = output_ckpt_dir / "best_stg1.pth"
     project_best_weights = MODELS_DIR / "ragwort_deimv2_best.pth"
 
