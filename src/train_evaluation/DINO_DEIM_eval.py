@@ -19,17 +19,81 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+import requests
+import torch
+import torchvision
+from PIL import Image, ImageDraw
+from torchvision import transforms
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parents[1]
-WORKSPACE_ROOT = PROJECT_ROOT.parent
-DEIMV2_ROOT = WORKSPACE_ROOT / "DEIMv2"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def find_deimv2_root() -> Path:
+    """Automatycznie wykrywa katalog repozytorium DEIMv2 w kontenerze lub na hoście."""
+    candidates = [
+        Path("/DEIMv2"),
+        PROJECT_ROOT.parent / "DEIMv2",
+        PROJECT_ROOT.parent.parent / "DEIMv2",
+    ]
+    for c in candidates:
+        if c.is_dir() and (c / "train.py").is_file():
+            return c.resolve()
+    return (PROJECT_ROOT.parent / "DEIMv2").resolve()
+
+
+DEIMV2_ROOT = find_deimv2_root()
+if str(DEIMV2_ROOT) not in sys.path:
+    sys.path.insert(0, str(DEIMV2_ROOT))
+
 DEFAULT_CONFIG = DEIMV2_ROOT / "configs" / "deimv2" / "deimv2_dinov3_ragwort.yml"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+RUNS_DIR = OUTPUTS_DIR / "runs" / "deim" / "ragwort_deimv2_weighted"
+MODELS_DIR = OUTPUTS_DIR / "models"
+WEIGHTS_DIR = OUTPUTS_DIR / "weights"
+EVAL_DIR = OUTPUTS_DIR / "evaluations" / "deim"
+PREDICTIONS_DIR = OUTPUTS_DIR / "predictions" / "deim"
+EXTERNAL_DIR = PROJECT_ROOT / "data" / "external_test_images"
+RESULTS_DIR = PREDICTIONS_DIR / "external_test_results"
+DATA_CONCAT_DIR = PROJECT_ROOT / "data" / "data_concatenated"
+DATASETS_COCO_DIR = OUTPUTS_DIR / "datasets" / "coco"
+LEGACY_COCO_DIR = OUTPUTS_DIR / "combined_dataset_coco"
+
+# Zewnętrzne zdjęcia testowe (takie same jak w YOLO)
+EXTERNAL_IMAGES = [
+    {
+        "filename": "ragwort_field_1.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/0/05/Jacobaea_vulgaris-3235.jpg",
+        "expected": "ragwort",
+        "description": "Starzec jakubek (Jacobaea vulgaris) kwitnacy na lace",
+    },
+    {
+        "filename": "ragwort_flowers_2.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/f/f3/%28MHNT%29_Halictus_rubicundus_on_Jacobaea_vulgaris_-_Villeneuve-les-Bouloc_France.jpg",
+        "expected": "ragwort",
+        "description": "Zblizenie na kwiaty starca jakubka z owadem",
+    },
+    {
+        "filename": "negative_dandelion_3.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/Gesloten_bloem_van_de_paardenbloem_%28Taraxacum_officinale%29_09-05-2021._%28d.j.b%29_02.jpg",
+        "expected": "negative",
+        "description": "Mniszek / dmuchawiec (inny zolty kwiat - negatyw)",
+    },
+    {
+        "filename": "negative_meadow_4.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/c/cd/Sch%C3%B6nwald_im_Schwarzwald%2C_Escheckstra%C3%9Fe_--_2025_--_0150.jpg",
+        "expected": "negative",
+        "description": "Zielona laka i trawa bez starca (negatyw)",
+    },
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -101,6 +165,38 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def ensure_weighted_coco_dataset(good_weight: int = 15, other_weight: int = 1, force: bool = False) -> Dict[str, Path]:
+    """Upewnia się, że zwagowany zbiór COCO istnieje; w razie potrzeby generuje go przez weight_dataset.py."""
+    train_ann = DATASETS_COCO_DIR / "train" / "annotations.json"
+    val_ann = DATASETS_COCO_DIR / "val" / "annotations.json"
+
+    if not force and train_ann.is_file() and val_ann.is_file():
+        return {
+            "train": train_ann,
+            "val": val_ann,
+            "test": DATASETS_COCO_DIR / "test" / "annotations.json",
+            "img_folder": DATASETS_COCO_DIR,
+        }
+
+    print("\n[DINO_DEIM] Zwagowany zbiór COCO nie został znaleziony lub zażądano przebudowy.")
+    print("[DINO_DEIM] Uruchamiam automatyczne wagowanie danych z data/data_concatenated...")
+    from src.scripts.weight_dataset import process_concatenated_dataset
+
+    process_concatenated_dataset(
+        concatenated_dir=DATA_CONCAT_DIR,
+        good_weight=good_weight,
+        other_weight=other_weight,
+        export_coco=True,
+    )
+
+    return {
+        "train": train_ann,
+        "val": val_ann,
+        "test": DATASETS_COCO_DIR / "test" / "annotations.json",
+        "img_folder": DATASETS_COCO_DIR,
+    }
+
+
 def update_items(args: argparse.Namespace) -> list[str]:
     """Translate friendly arguments into DEIMv2 YAML overrides."""
 
@@ -168,6 +264,8 @@ def require_paths(config_path: Path) -> None:
             f"Training configuration not found: {config_path}"
         )
 
+    if x_right < x_left or y_bottom < y_top:
+        return 0.0
 
 def dataset_summary(
     config: dict[str, Any],
@@ -203,6 +301,8 @@ def dataset_summary(
 
     return summaries
 
+    pole_calkowite = float(pole_a + pole_b - pole_przeciecia)
+    return (pole_przeciecia / pole_calkowite) if pole_calkowite > 0 else 0.0
 
 def startup_report(
     config_path: Path,
@@ -369,6 +469,7 @@ def smoke_test(
         f"target boxes={[tuple(t['boxes'].shape) for t in targets]}"
     )
 
+    print(f"Smoke batch: images={tuple(samples.shape)}; target boxes={[tuple(t['boxes'].shape) for t in targets]}")
     model.train()
     criterion.train()
 

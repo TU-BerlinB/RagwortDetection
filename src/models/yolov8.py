@@ -14,6 +14,7 @@ Umożliwia:
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -34,7 +35,7 @@ class YOLOv8:
 
     Przykłady użycia:
         >>> from src.models.yolov8 import YOLOv8
-        >>> model = YOLOv8("yolov8n.pt")
+        >>> model = YOLOv8("yolov8s.pt")
         >>> results = model.predict("sciezka/do/obrazu.jpg")
         >>> # Trening na połączonym zbiorze:
         >>> # model.train(data="data/combined_dataset/data.yaml", epochs=30)
@@ -42,31 +43,67 @@ class YOLOv8:
 
     def __init__(
         self,
-        model_weight: Union[str, Path] = "yolov8n.pt",
+        model_weight: Union[str, Path] = "yolov8s.pt",
         device: Optional[str] = None,
         task: str = "detect",
     ):
         """
         Args:
-            model_weight: Nazwa bazowego modelu (np. 'yolov8n.pt', 'yolov8s.pt')
+            model_weight: Nazwa bazowego modelu (np. 'yolov8s.pt', 'yolov8m.pt')
                           lub ścieżka do wytrenowanego pliku wag .pt.
             device: 'cuda', 'cpu' lub None (automatyczne wykrycie).
             task: Zadanie modelu ('detect', 'segment', 'classify'). Domyślnie 'detect'.
         """
+        # Normalizacja urzadzenia (PyTorch wymaga 'cuda:0' lub 'cuda', nie samo '0')
         if device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        elif str(device).isdigit():
+            self.device = f"cuda:{device}" if torch.cuda.is_available() else "cpu"
+        elif str(device).lower() in ("gpu", "cuda"):
+            self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         else:
-            self.device = device
+            self.device = str(device)
 
-        self.model_weight = str(model_weight)
+        # Sprawdzenie gdzie znajduje się waga lub gdzie powinna zostać zapisana/pobrana
+        mw = Path(model_weight)
+        weights_dir = REPO_ROOT / "outputs" / "weights"
+        outputs_dir = REPO_ROOT / "outputs"
+
+        if mw.is_file():
+            self.model_weight = str(mw.resolve())
+        elif (weights_dir / mw.name).is_file():
+            self.model_weight = str((weights_dir / mw.name).resolve())
+        elif (outputs_dir / mw.name).is_file():
+            self.model_weight = str((outputs_dir / mw.name).resolve())
+        elif mw.suffix in (".pt", ".pth") or not mw.parent.name:
+            weights_dir.mkdir(parents=True, exist_ok=True)
+            self.model_weight = str((weights_dir / mw.name).resolve())
+        else:
+            self.model_weight = str(model_weight)
         self.task = task
 
-        # Inicjalizacja modelu Ultralytics
+        # Inicjalizacja modelu Ultralytics (jeśli waga nie istnieje, zostanie pobrana do self.model_weight)
         self.model = YOLO(self.model_weight, task=self.task)
 
+        # Upewnienie się, że plik wagi bazowej jest dostępny także w outputs/ (symlink lub kopia)
+        try:
+            resolved_weight = Path(self.model_weight)
+            if resolved_weight.is_file() and resolved_weight.parent.resolve() == weights_dir.resolve():
+                outputs_link = outputs_dir / resolved_weight.name
+                if not outputs_link.exists():
+                    try:
+                        outputs_link.symlink_to(Path("weights") / resolved_weight.name)
+                    except Exception:
+                        shutil.copy2(resolved_weight, outputs_link)
+        except Exception:
+            pass
+
         # Przeniesienie na odpowiednie urządzenie
-        if hasattr(self.model, "to"):
-            self.model.to(self.device)
+        try:
+            if hasattr(self.model, "to"):
+                self.model.to(self.device)
+        except Exception:
+            pass
 
         self.best_weight_path: Optional[Path] = None
 
@@ -78,6 +115,7 @@ class YOLOv8:
         batch: int = 8,
         lr0: float = 0.005,
         workers: int = 2,
+        device: Optional[str] = None,
         project: Optional[str] = None,
         name: str = "ragwort_yolov8",
         exist_ok: bool = True,
@@ -86,7 +124,7 @@ class YOLOv8:
         **kwargs: Any,
     ) -> Any:
         """
-        Trenuje model YOLOv8 na podanym zbiorze danych.
+        Trenuje model YOLOv8 na zadanym zbiorze danych.
 
         Args:
             data: Ścieżka do pliku data.yaml (np. data/combined_dataset/data.yaml).
@@ -94,7 +132,9 @@ class YOLOv8:
             imgsz: Rozdzielczość obrazu wejściowego (domyślnie 640).
             batch: Rozmiar batcha.
             lr0: Początkowy współczynnik uczenia.
-            project: Katalog nadrzędny wyników treningu (domyślnie runs).
+            workers: Liczba wątków loadera danych.
+            device: Urządzenie obliczeniowe ('cuda:0', 'cpu' itp.).
+            project: Katalog nadrzędny wyników treningu (domyślnie outputs/runs/yolo).
             name: Nazwa folderu eksperymentu.
             exist_ok: Nadpisywanie istniejącego folderu eksperymentu.
             save: Zapisywanie wag checkpointów.
@@ -114,9 +154,11 @@ class YOLOv8:
                 "Uruchom najpierw: python src/scripts/data_download.py"
             )
 
-        train_project = project or str(REPO_ROOT / "runs")
+        train_project = project or str(REPO_ROOT / "outputs" / "runs" / "yolo")
+        target_device = device if device is not None else self.device
+        kwargs.pop("device", None)
 
-        print(f"[YOLOv8] Rozpoczynam trening na urządzeniu: {self.device}")
+        print(f"[YOLOv8] Rozpoczynam trening na urządzeniu: {target_device}")
         print(f"[YOLOv8] Zbiór: {data_path} | Epoki: {epochs} | Batch: {batch} | Imgsz: {imgsz}")
 
         results = self.model.train(
@@ -126,7 +168,7 @@ class YOLOv8:
             batch=batch,
             lr0=lr0,
             workers=workers,
-            device=self.device,
+            device=target_device,
             project=train_project,
             name=name,
             exist_ok=exist_ok,
@@ -136,7 +178,9 @@ class YOLOv8:
         )
 
         # Zapis ścieżki do najlepszych wag
-        save_dir = Path(getattr(self.model.trainer, "save_dir", Path(train_project) / "detect" / name))
+        task_subfolder = "segment" if ("seg" in str(self.model_weight) or self.task == "segment") else "detect"
+        trainer_dir = getattr(self.model.trainer, "save_dir", None)
+        save_dir = Path(trainer_dir) if trainer_dir else Path(train_project) / task_subfolder / name
         best_pt = save_dir / "weights" / "best.pt"
         if best_pt.exists():
             self.best_weight_path = best_pt
@@ -145,7 +189,8 @@ class YOLOv8:
             # Kopiujemy wagi również do models/ dla łatwego dostępu
             models_dir = REPO_ROOT / "models"
             models_dir.mkdir(parents=True, exist_ok=True)
-            saved_copy = models_dir / "ragwort_yolov8_best.pt"
+            saved_filename = "ragwort_yolov8_seg_best.pt" if task_subfolder == "segment" else "ragwort_yolov8_best.pt"
+            saved_copy = models_dir / saved_filename
             import shutil
             shutil.copy2(best_pt, saved_copy)
             print(f"[YOLOv8] Kopia wag zapisana w: {saved_copy}")
@@ -162,7 +207,7 @@ class YOLOv8:
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         """
-        Wykonuje predykcję detekcji na obrazie lub liście obrazów.
+        Wykonuje predykcję detekcji lub segmentacji na obrazie lub liście obrazów.
 
         Args:
             source: Obraz (PIL, numpy, ścieżka do pliku, folder, tensor).
@@ -180,6 +225,8 @@ class YOLOv8:
                     "scores": [0.94, ...],                     # prawdopodobieństwa
                     "labels": [0, ...],                        # indeksy klas
                     "class_names": ["ragwort", ...],           # nazwy klas
+                    "masks": [np.ndarray, ...],                # poligony masek (piksele)
+                    "masks_normalized": [np.ndarray, ...],     # poligony znormalizowane (0..1)
                     "orig_shape": (wysokość, szerokość),
                     "raw": Obiekt Results z ultralytics
                 },
@@ -203,6 +250,8 @@ class YOLOv8:
             scores: List[float] = []
             labels: List[int] = []
             class_names: List[str] = []
+            masks_xy: List[np.ndarray] = []
+            masks_xyn: List[np.ndarray] = []
 
             if res.boxes is not None and len(res.boxes) > 0:
                 # boxes w formacie [xmin, ymin, xmax, ymax]
@@ -214,12 +263,18 @@ class YOLOv8:
                 names_dict = res.names or {}
                 class_names = [names_dict.get(cls_id, str(cls_id)) for cls_id in labels]
 
+            if res.masks is not None:
+                masks_xy = [p for p in res.masks.xy]
+                masks_xyn = [p for p in res.masks.xyn]
+
             parsed_output.append(
                 {
                     "boxes": boxes_xyxy,
                     "scores": scores,
                     "labels": labels,
                     "class_names": class_names,
+                    "masks": masks_xy,
+                    "masks_normalized": masks_xyn,
                     "orig_shape": res.orig_shape,
                     "raw": res,
                 }
@@ -272,6 +327,7 @@ class YOLOv8:
         imgsz: int = 640,
         batch: int = 16,
         split: str = "val",
+        device: Optional[str] = None,
         verbose: bool = True,
         **kwargs: Any,
     ) -> Any:
@@ -282,12 +338,15 @@ class YOLOv8:
         if not data_path.is_absolute():
             data_path = (REPO_ROOT / data_path).resolve()
 
+        target_device = device if device is not None else self.device
+        kwargs.pop("device", None)
+
         return self.model.val(
             data=str(data_path),
             imgsz=imgsz,
             batch=batch,
             split=split,
-            device=self.device,
+            device=target_device,
             verbose=verbose,
             **kwargs,
         )
@@ -302,8 +361,8 @@ class YOLOv8:
 
 
 if __name__ == "__main__":
-    print("=== Testowanie klasy YOLOv8 ===")
-    yolo = YOLOv8(model_weight="yolov8n.pt")
+    print("=== Test inicjalizacji modelu YOLOv8 Small ===")
+    yolo = YOLOv8(model_weight="yolov8s.pt")
     print(f"Urządzenie modelu: {yolo.device}")
 
     # Test predykcji na syntetycznym obrazie
