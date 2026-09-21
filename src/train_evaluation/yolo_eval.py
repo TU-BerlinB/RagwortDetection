@@ -41,6 +41,17 @@ WEIGHTS_DIR = OUTPUTS_DIR / "weights"
 EVAL_DIR = OUTPUTS_DIR / "evaluations" / "yolo"
 PREDICTIONS_DIR = OUTPUTS_DIR / "predictions" / "yolo"
 
+# Wymuszenie zapisu wag bazowych i runów Ultralytics wyłącznie w folderze outputs/
+try:
+    from ultralytics import settings
+    settings.update({
+        "weights_dir": str(WEIGHTS_DIR.resolve()),
+        "runs_dir": str(RUNS_DIR.resolve()),
+        "datasets_dir": str((OUTPUTS_DIR / "datasets").resolve()),
+    })
+except Exception:
+    pass
+
 TEST_IMAGES_DIR = REPO_ROOT / "data" / "combined_dataset" / "test" / "images"
 TEST_LABELS_DIR = REPO_ROOT / "data" / "combined_dataset" / "test" / "labels"
 EXTERNAL_DIR = REPO_ROOT / "data" / "external_test_images"
@@ -388,17 +399,41 @@ def trenuj_i_ewaluuj(
 
     data_yaml = ensure_portable_data_yaml(Path(data_yaml))
 
-    # Sprawdzenie wag bazowych w outputs/weights/ lub outputs/ (aby yolov8s.pt był w outputs/)
-    weights_candidate = WEIGHTS_DIR / model_name
-    outputs_candidate = OUTPUTS_DIR / model_name
-    if not Path(model_name).is_file():
-        if weights_candidate.is_file():
-            model_name = str(weights_candidate.resolve())
-        elif outputs_candidate.is_file():
-            model_name = str(outputs_candidate.resolve())
-        elif Path(model_name).suffix in (".pt", ".pth") or not Path(model_name).parent.name:
-            WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-            model_name = str((WEIGHTS_DIR / Path(model_name).name).resolve())
+    # Sprawdzenie wag bazowych w outputs/weights/ lub outputs/models/
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+    p_model = Path(model_name)
+    if not p_model.is_file():
+        if (WEIGHTS_DIR / p_model.name).is_file():
+            model_name = str((WEIGHTS_DIR / p_model.name).resolve())
+        elif (MODELS_DIR / p_model.name).is_file():
+            model_name = str((MODELS_DIR / p_model.name).resolve())
+        elif (OUTPUTS_DIR / p_model.name).is_file():
+            model_name = str((OUTPUTS_DIR / p_model.name).resolve())
+        elif (REPO_ROOT / "weights" / p_model.name).is_file():
+            target_pt = WEIGHTS_DIR / p_model.name
+            shutil.copy2(REPO_ROOT / "weights" / p_model.name, target_pt)
+            model_name = str(target_pt.resolve())
+        elif p_model.suffix in (".pt", ".pth") or not p_model.parent.name:
+            model_name = str((WEIGHTS_DIR / p_model.name).resolve())
+    elif p_model.parent.resolve() == (REPO_ROOT / "weights").resolve():
+        target_pt = WEIGHTS_DIR / p_model.name
+        shutil.copy2(p_model, target_pt)
+        model_name = str(target_pt.resolve())
+
+    # Jeśli podano własne weights_path, upewnij się że szukamy w outputs/
+    if weights_path:
+        p_wp = Path(weights_path)
+        if not p_wp.is_file():
+            if (WEIGHTS_DIR / p_wp.name).is_file():
+                weights_path = str((WEIGHTS_DIR / p_wp.name).resolve())
+            elif (MODELS_DIR / p_wp.name).is_file():
+                weights_path = str((MODELS_DIR / p_wp.name).resolve())
+            elif (REPO_ROOT / "weights" / p_wp.name).is_file():
+                target_wp = WEIGHTS_DIR / p_wp.name
+                shutil.copy2(REPO_ROOT / "weights" / p_wp.name, target_wp)
+                weights_path = str(target_wp.resolve())
 
     print("====================================================================")
     print(" 1. TRENING MODELU YOLOV8 (Z UWZGLĘDNIENIEM WAG)")
@@ -442,10 +477,28 @@ def trenuj_i_ewaluuj(
         )
 
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
         trained_best = RUNS_DIR / "ragwort_yolov8_weighted" / "weights" / "best.pt"
         if trained_best.exists():
             shutil.copy2(trained_best, best_weights_file)
-            print(f"\n[WAGI] Zapisano najlepsze wagi w: {best_weights_file}")
+            shutil.copy2(trained_best, WEIGHTS_DIR / "ragwort_yolov8_best.pt")
+            shutil.copy2(trained_best, WEIGHTS_DIR / "best.pt")
+            print(f"\n[WAGI] Zapisano najlepsze wagi w: {best_weights_file} oraz {WEIGHTS_DIR / 'best.pt'}")
+
+        trained_last = RUNS_DIR / "ragwort_yolov8_weighted" / "weights" / "last.pt"
+        if trained_last.exists():
+            shutil.copy2(trained_last, WEIGHTS_DIR / "last.pt")
+
+        # Automatyczne usunięcie przypadkowo utworzonego katalogu 'weights/' w root
+        root_w = REPO_ROOT / "weights"
+        if root_w.is_dir() and root_w.resolve() != WEIGHTS_DIR.resolve():
+            for f in root_w.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, WEIGHTS_DIR / f.name)
+            try:
+                shutil.rmtree(root_w)
+            except Exception:
+                pass
 
     print("\n====================================================================")
     print(" 2. WALIDACJA MODELU NA ZBIORZE TESTOWYM (YOLO Metrics)")

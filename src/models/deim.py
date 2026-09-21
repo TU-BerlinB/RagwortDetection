@@ -65,13 +65,26 @@ class DEIMModel:
 
     def __init__(
         self,
-        weights_path: Union[str, Path] = "weights/model.pt",
+        weights_path: Union[str, Path] = "outputs/models/model.pt",
         device: Optional[str] = None,
     ):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.weights_path = Path(weights_path)
-        if not self.weights_path.is_absolute():
-            self.weights_path = (REPO_ROOT / self.weights_path).resolve()
+        wp = Path(weights_path)
+        if not wp.is_absolute():
+            candidates = [
+                REPO_ROOT / "outputs" / "models" / wp.name,
+                REPO_ROOT / "outputs" / "weights" / wp.name,
+                REPO_ROOT / "outputs" / wp,
+                REPO_ROOT / wp,
+            ]
+            for c in candidates:
+                if c.exists():
+                    self.weights_path = c.resolve()
+                    break
+            else:
+                self.weights_path = (REPO_ROOT / wp).resolve()
+        else:
+            self.weights_path = wp
 
         if not self.weights_path.exists():
             raise FileNotFoundError(f"Nie znaleziono wag DEIM: {self.weights_path}")

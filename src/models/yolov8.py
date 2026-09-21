@@ -28,6 +28,17 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 DEFAULT_DATA_YAML = REPO_ROOT / "data" / "combined_dataset" / "data.yaml"
 
+# Konfiguracja katalogów Ultralytics, aby wagi i runy trafiały wyłącznie do outputs/
+try:
+    from ultralytics import settings
+    settings.update({
+        "weights_dir": str((REPO_ROOT / "outputs" / "weights").resolve()),
+        "runs_dir": str((REPO_ROOT / "outputs" / "runs").resolve()),
+        "datasets_dir": str((REPO_ROOT / "outputs" / "datasets").resolve()),
+    })
+except Exception:
+    pass
+
 
 class YOLOv8:
     """
@@ -67,16 +78,25 @@ class YOLOv8:
         # Sprawdzenie gdzie znajduje się waga lub gdzie powinna zostać zapisana/pobrana
         mw = Path(model_weight)
         weights_dir = REPO_ROOT / "outputs" / "weights"
+        models_dir = REPO_ROOT / "outputs" / "models"
         outputs_dir = REPO_ROOT / "outputs"
+        weights_dir.mkdir(parents=True, exist_ok=True)
+        models_dir.mkdir(parents=True, exist_ok=True)
 
-        if mw.is_file():
+        if mw.is_file() and mw.parent.resolve() != (REPO_ROOT / "weights").resolve():
             self.model_weight = str(mw.resolve())
         elif (weights_dir / mw.name).is_file():
             self.model_weight = str((weights_dir / mw.name).resolve())
+        elif (models_dir / mw.name).is_file():
+            self.model_weight = str((models_dir / mw.name).resolve())
         elif (outputs_dir / mw.name).is_file():
             self.model_weight = str((outputs_dir / mw.name).resolve())
+        elif (REPO_ROOT / "weights" / mw.name).is_file():
+            # Migracja wagi z ewentualnego katalogu głównego weights/ do outputs/weights/
+            target_pt = weights_dir / mw.name
+            shutil.copy2(REPO_ROOT / "weights" / mw.name, target_pt)
+            self.model_weight = str(target_pt.resolve())
         elif mw.suffix in (".pt", ".pth") or not mw.parent.name:
-            weights_dir.mkdir(parents=True, exist_ok=True)
             self.model_weight = str((weights_dir / mw.name).resolve())
         else:
             self.model_weight = str(model_weight)
@@ -85,7 +105,7 @@ class YOLOv8:
         # Inicjalizacja modelu Ultralytics (jeśli waga nie istnieje, zostanie pobrana do self.model_weight)
         self.model = YOLO(self.model_weight, task=self.task)
 
-        # Upewnienie się, że plik wagi bazowej jest dostępny także w outputs/ (symlink lub kopia)
+        # Upewnienie się, że plik wagi bazowej jest dostępny także w outputs/
         try:
             resolved_weight = Path(self.model_weight)
             if resolved_weight.is_file() and resolved_weight.parent.resolve() == weights_dir.resolve():
@@ -186,14 +206,29 @@ class YOLOv8:
             self.best_weight_path = best_pt
             print(f"[YOLOv8] Najlepsze wagi zapisano w: {self.best_weight_path}")
 
-            # Kopiujemy wagi również do models/ dla łatwego dostępu
-            models_dir = REPO_ROOT / "models"
+            # Kopiujemy wagi do outputs/models/ oraz outputs/weights/ dla łatwego dostępu
+            models_dir = REPO_ROOT / "outputs" / "models"
+            weights_dir = REPO_ROOT / "outputs" / "weights"
             models_dir.mkdir(parents=True, exist_ok=True)
+            weights_dir.mkdir(parents=True, exist_ok=True)
             saved_filename = "ragwort_yolov8_seg_best.pt" if task_subfolder == "segment" else "ragwort_yolov8_best.pt"
             saved_copy = models_dir / saved_filename
             import shutil
             shutil.copy2(best_pt, saved_copy)
-            print(f"[YOLOv8] Kopia wag zapisana w: {saved_copy}")
+            shutil.copy2(best_pt, weights_dir / saved_filename)
+            shutil.copy2(best_pt, weights_dir / "best.pt")
+            print(f"[YOLOv8] Kopia wag zapisana w: {saved_copy} oraz {weights_dir}")
+
+            # Usunięcie ewentualnie utworzonego folderu weights/ w katalogu głównym
+            root_w = REPO_ROOT / "weights"
+            if root_w.is_dir() and root_w.resolve() != weights_dir.resolve():
+                for f in root_w.iterdir():
+                    if f.is_file():
+                        shutil.copy2(f, weights_dir / f.name)
+                try:
+                    shutil.rmtree(root_w)
+                except Exception:
+                    pass
 
         return results
 
