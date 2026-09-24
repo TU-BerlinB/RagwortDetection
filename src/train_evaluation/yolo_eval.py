@@ -1,15 +1,16 @@
 """
-data_eval.py
-
-Skrypt do treningu, ewaluacji i testowania modelu detekcji starca (RagwortDetection).
-
-Zawiera:
-  1. Obliczanie IoU (oblicz_iou) i ewaluację detekcji (ewaluacja_modelu: Precision, Recall, FP, FN).
-  2. Trening modelu YOLOv8 na danych z data/combined_dataset (wszystkie dane treningowe).
-  3. Zapisanie najlepszych wag do models/ragwort_yolov8_best.pt.
-  4. Testy walidacyjne na podzbiorze testowym (mAP50, mAP50-95).
-  5. Pobranie zewnętrznych zdjęć z internetu (starzec jakubek, inne żółte kwiaty, łąka).
-  6. Test poprawności na nowych danych zewnętrznych i zapis wizualizacji z ramkami.
+File: src/train_evaluation/yolo_eval.py
+Usage:
+    python src/train_evaluation/yolo_eval.py --epochs 50 --batch 16 --imgsz 640
+    # To evaluate existing weights without retraining:
+    python src/train_evaluation/yolo_eval.py --skip-train --weights outputs/models/ragwort_yolov8_best.pt
+Description:
+    Training, validation, and evaluation pipeline for YOLOv8 on weighted ragwort detection datasets:
+      1. YOLOv8 model training on weighted datasets (outputs/datasets/data_weighted/data_weighted.yaml).
+      2. Best weights preservation to outputs/models/ragwort_yolov8_best.pt.
+      3. Validation on test split for mAP50 and mAP50-95 metrics.
+      4. Custom IoU=0.5 evaluation (Precision, Recall, F1, saving False Positive/False Negative images).
+      5. Generalization tests on external web images with annotated bounding box outputs.
 """
 
 from __future__ import annotations
@@ -21,16 +22,15 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+import requests
 import yaml
+from PIL import Image, ImageDraw
 
-# Ścieżka bazowa projektu
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import requests
-from PIL import Image, ImageDraw
 from src.models.yolov8 import YOLOv8
 
 OUTPUTS_DIR = REPO_ROOT / "outputs"
@@ -41,7 +41,6 @@ WEIGHTS_DIR = OUTPUTS_DIR / "weights"
 EVAL_DIR = OUTPUTS_DIR / "evaluations" / "yolo"
 PREDICTIONS_DIR = OUTPUTS_DIR / "predictions" / "yolo"
 
-# Wymuszenie zapisu wag bazowych i runów Ultralytics wyłącznie w folderze outputs/
 try:
     from ultralytics import settings
     settings.update({
@@ -57,39 +56,38 @@ TEST_LABELS_DIR = REPO_ROOT / "data" / "combined_dataset" / "test" / "labels"
 EXTERNAL_DIR = REPO_ROOT / "data" / "external_test_images"
 RESULTS_DIR = PREDICTIONS_DIR / "external_test_results"
 
-# Zewnętrzne zdjęcia z internetu (Wikimedia Commons) do weryfikacji generalizacji
 EXTERNAL_IMAGES = [
     {
         "filename": "ragwort_field_1.jpg",
         "url": "https://upload.wikimedia.org/wikipedia/commons/0/05/Jacobaea_vulgaris-3235.jpg",
         "expected": "ragwort",
-        "description": "Starzec jakubek (Jacobaea vulgaris) kwitnacy na lace",
+        "description": "Ragwort (Jacobaea vulgaris) blooming in a meadow",
     },
     {
         "filename": "ragwort_flowers_2.jpg",
         "url": "https://upload.wikimedia.org/wikipedia/commons/f/f3/%28MHNT%29_Halictus_rubicundus_on_Jacobaea_vulgaris_-_Villeneuve-les-Bouloc_France.jpg",
         "expected": "ragwort",
-        "description": "Zblizenie na kwiaty starca jakubka z owadem",
+        "description": "Close-up of ragwort flowers with an insect",
     },
     {
         "filename": "negative_dandelion_3.jpg",
         "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/Gesloten_bloem_van_de_paardenbloem_%28Taraxacum_officinale%29_09-05-2021._%28d.j.b%29_02.jpg",
         "expected": "negative",
-        "description": "Mniszek / dmuchawiec (inny zolty kwiat - negatyw)",
+        "description": "Dandelion flower (negative sample with different yellow flowers)",
     },
     {
         "filename": "negative_meadow_4.jpg",
         "url": "https://upload.wikimedia.org/wikipedia/commons/c/cd/Sch%C3%B6nwald_im_Schwarzwald%2C_Escheckstra%C3%9Fe_--_2025_--_0150.jpg",
         "expected": "negative",
-        "description": "Zielona laka i trawa bez starca (negatyw)",
+        "description": "Green meadow and grass without ragwort (negative sample)",
     },
 ]
 
 
-def oblicz_iou(box_a, box_b):
+def oblicz_iou(box_a: List[float], box_b: List[float]) -> float:
     """
-    Oblicza IoU [Intersection over Union - procent pokrycia się dwóch ramek].
-    Format ramek: [x_min, y_min, x_max, y_max]
+    Calculate Intersection over Union (IoU) between two bounding boxes.
+    Box format: [xmin, ymin, xmax, ymax].
     """
     x_left = max(box_a[0], box_b[0])
     y_top = max(box_a[1], box_b[1])
@@ -99,20 +97,29 @@ def oblicz_iou(box_a, box_b):
     if x_right < x_left or y_bottom < y_top:
         return 0.0
 
-    pole_przeciecia = (x_right - x_left) * (y_bottom - y_top)
-    pole_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-    pole_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    intersection = (x_right - x_left) * (y_bottom - y_top)
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
 
-    pole_calkowite = float(pole_a + pole_b - pole_przeciecia)
-    if pole_calkowite <= 0:
+    total_area = float(area_a + area_b - intersection)
+    if total_area <= 0:
         return 0.0
 
-    return pole_przeciecia / pole_calkowite
+    return intersection / total_area
 
 
-def ewaluacja_modelu(katalog_zdjec, predykcje, poprawne_dane, prog_iou=0.5):
+calculate_iou = oblicz_iou
+
+
+def ewaluacja_modelu(
+    katalog_zdjec: str | Path,
+    predykcje: Dict[str, List[List[float]]],
+    poprawne_dane: Dict[str, List[List[float]]],
+    prog_iou: float = 0.5,
+) -> Dict[str, Any]:
     """
-    Główna funkcja oceniająca model pod kątem IoU, Precision, Recall oraz błędów FP/FN.
+    Evaluate detections against ground truth at specified IoU threshold,
+    reporting Precision, Recall, F1, and saving False Positive/Negative images.
     """
     katalog_fp = EVAL_DIR / "bledy_False_Positives"
     katalog_fn = EVAL_DIR / "bledy_False_Negatives"
@@ -156,15 +163,15 @@ def ewaluacja_modelu(katalog_zdjec, predykcje, poprawne_dane, prog_iou=0.5):
     recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
 
-    print("--- WYNIKI EWALUACJI (data_eval) ---")
-    print(f"True Positives (Trafione)        : {true_positives}")
-    print(f"False Positives (Błędne alarmy)  : {false_positives}")
-    print(f"False Negatives (Przegapione)    : {false_negatives}")
-    print(f"Precyzja (Precision)             : {precision:.4f}")
-    print(f"Czułość (Recall)                 : {recall:.4f}")
-    print(f"F1-Score                         : {f1:.4f}")
-    print(f"Zdjęcia z fałszywymi alarmami zapisano w : {katalog_fp}")
-    print(f"Zdjęcia z przegapionymi starcami zapisano w: {katalog_fn}")
+    print("--- EVALUATION RESULTS (IoU = 0.5) ---")
+    print(f"True Positives   : {true_positives}")
+    print(f"False Positives  : {false_positives}")
+    print(f"False Negatives  : {false_negatives}")
+    print(f"Precision        : {precision:.4f}")
+    print(f"Recall           : {recall:.4f}")
+    print(f"F1-Score         : {f1:.4f}")
+    print(f"False Positives error folder : {katalog_fp}")
+    print(f"False Negatives error folder : {katalog_fn}")
 
     return {
         "true_positives": true_positives,
@@ -177,7 +184,7 @@ def ewaluacja_modelu(katalog_zdjec, predykcje, poprawne_dane, prog_iou=0.5):
 
 
 def wczytaj_poprawne_dane_z_folderu(images_dir: Path, labels_dir: Path) -> Dict[str, List[List[float]]]:
-    """Wczytuje etykiety Ground Truth z plików YOLO .txt i przelicza na format pikseli [xmin, ymin, xmax, ymax]."""
+    """Load Ground Truth labels from YOLO .txt files and convert to pixel coordinates [xmin, ymin, xmax, ymax]."""
     ground_truth = {}
     image_files = sorted([f for f in images_dir.iterdir() if f.is_file()])
 
@@ -193,7 +200,7 @@ def wczytaj_poprawne_dane_z_folderu(images_dir: Path, labels_dir: Path) -> Dict[
                     parts = line.strip().split()
                     if len(parts) >= 5:
                         cls_id = int(parts[0])
-                        # Klasa 0 to starzec (ragwort)
+                        # Class 0 is ragwort
                         if cls_id == 0:
                             xc, yc, bw, bh = map(float, parts[1:5])
                             xmin = (xc - bw / 2.0) * orig_w
@@ -206,41 +213,41 @@ def wczytaj_poprawne_dane_z_folderu(images_dir: Path, labels_dir: Path) -> Dict[
 
 
 def pobierz_zewnetrzne_zdjecia() -> List[Path]:
-    """Pobiera zewnętrzne zdjęcia z internetu (Wikimedia Commons) do weryfikacji."""
+    """Download external web test images for generalization testing."""
     EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "RagwortDetectionResearch/1.0 (academic research; student@university.edu)"}
-    sciezki = []
+    paths = []
 
-    print("\n--- POBIERANIE ZEWNĘTRZNYCH ZDJĘĆ Z INTERNETU ---")
+    print("\n--- DOWNLOADING EXTERNAL TEST IMAGES ---")
     for item in EXTERNAL_IMAGES:
-        cel = EXTERNAL_DIR / item["filename"]
-        if not cel.exists():
-            print(f"Pobieranie: {item['filename']} ({item['description']})...")
+        dest = EXTERNAL_DIR / item["filename"]
+        if not dest.exists():
+            print(f"Downloading: {item['filename']} ({item['description']})...")
             try:
                 r = requests.get(item["url"], headers=headers, timeout=20)
                 if r.status_code == 200:
-                    cel.write_bytes(r.content)
-                    print(f"  -> Sukces ({len(r.content) // 1024} KB)")
+                    dest.write_bytes(r.content)
+                    print(f"  -> Success ({len(r.content) // 1024} KB)")
                 else:
-                    print(f"  -> Błąd HTTP: {r.status_code}")
+                    print(f"  -> HTTP Error: {r.status_code}")
             except Exception as e:
-                print(f"  -> Wyjątek: {e}")
+                print(f"  -> Exception: {e}")
         else:
-            print(f"Plik już istnieje lokalnie: {item['filename']}")
+            print(f"File exists locally: {item['filename']}")
 
-        if cel.exists():
-            sciezki.append(cel)
+        if dest.exists():
+            paths.append(dest)
 
-    return sciezki
+    return paths
 
 
 def testuj_zewnetrzne_zdjecia(model: YOLOv8, sciezki_zdjec: List[Path]):
-    """Wykonuje inferencję na zewnętrznych zdjęciach i zapisuje wyniki z ramkami."""
+    """Run inference on external test images and save visualizations with bounding boxes."""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     meta_info = {item["filename"]: item for item in EXTERNAL_IMAGES}
 
-    print("\n--- WYNIKI TESTÓW NA ZEWNĘTRZNYCH ZDJĘCIACH ---")
-    print(f"{'Nazwa pliku':<26} | {'Oczekiwane':<10} | {'Wykrycia':<9} | {'Max Conf':<9} | {'Werdykt'}")
+    print("\n--- EXTERNAL TEST RESULTS ---")
+    print(f"{'Filename':<26} | {'Expected':<10} | {'Detections':<10} | {'Max Conf':<9} | {'Verdict'}")
     print("-" * 75)
 
     for img_path in sciezki_zdjec:
@@ -256,13 +263,12 @@ def testuj_zewnetrzne_zdjecia(model: YOLOv8, sciezki_zdjec: List[Path]):
         max_conf = max(scores) if scores else 0.0
 
         if expected == "ragwort":
-            werdykt = "SUKCES (Trafiono starca)" if n_det > 0 else "PRZEGAPIONO"
+            werdykt = "SUCCESS (Ragwort detected)" if n_det > 0 else "MISSED"
         else:
-            werdykt = "SUKCES (Czysto, brak fałszywych alarmów)" if n_det == 0 else "FAŁSZYWY ALARM"
+            werdykt = "SUCCESS (Clean, no false alarms)" if n_det == 0 else "FALSE ALARM"
 
-        print(f"{img_path.name:<26} | {expected:<10} | {n_det:<9} | {max_conf:<9.2f} | {werdykt}")
+        print(f"{img_path.name:<26} | {expected:<10} | {n_det:<10} | {max_conf:<9.2f} | {werdykt}")
 
-        # Rysowanie ramek
         with Image.open(img_path) as im:
             annotated = im.convert("RGB")
             draw = ImageDraw.Draw(annotated)
@@ -276,14 +282,13 @@ def testuj_zewnetrzne_zdjecia(model: YOLOv8, sciezki_zdjec: List[Path]):
             save_file = RESULTS_DIR / f"wynik_{img_path.name}"
             annotated.save(save_file)
 
-    print(f"\nZdjęcia z narysowanymi ramkami zapisano w katalogu: {RESULTS_DIR}")
+    print(f"\nVisualizations saved to: {RESULTS_DIR}")
 
 
 def ensure_portable_data_yaml(yaml_path: Path) -> Path:
     """
-    Weryfikuje konfigurację YAML zbioru oraz powiązane manifesty .txt,
-    aby były relatywne i przenośne pomiędzy środowiskiem Docker (/workspace)
-    a maszyną lokalną hosta.
+    Verify dataset YAML configuration and referenced manifest paths,
+    ensuring relative paths that work seamlessly across Docker and host environments.
     """
     yaml_path = Path(yaml_path)
     if not yaml_path.exists():
@@ -293,7 +298,7 @@ def ensure_portable_data_yaml(yaml_path: Path) -> Path:
         with open(yaml_path, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
     except Exception as e:
-        print(f"[OSTRZEŻENIE] Nie można załadować {yaml_path}: {e}")
+        print(f"[Warning] Cannot load {yaml_path}: {e}")
         return yaml_path
 
     if not isinstance(cfg, dict):
@@ -302,14 +307,12 @@ def ensure_portable_data_yaml(yaml_path: Path) -> Path:
     yaml_dir = yaml_path.parent.resolve()
     modified = False
 
-    # 1. Usuń parametr 'path' jeśli nie istnieje lub to '.' (w Ultralytics '.' resolve'uje do CWD zamiast folderu YAML)
     if "path" in cfg and cfg["path"]:
         p_val = Path(str(cfg["path"]))
         if not p_val.exists() or p_val.as_posix() == ".":
             cfg.pop("path", None)
             modified = True
 
-    # 2. Napraw ścieżki do plików manifestów (train, val, test)
     for key in ("train", "val", "test"):
         if key in cfg and isinstance(cfg[key], str) and cfg[key].endswith(".txt"):
             txt_cand = yaml_dir / Path(cfg[key]).name
@@ -317,7 +320,6 @@ def ensure_portable_data_yaml(yaml_path: Path) -> Path:
                 cfg[key] = txt_cand.name
                 modified = True
 
-            # 3. Weryfikuj i napraw linie w plikach .txt jeśli zawierają bezwzględne ścieżki z innego środowiska
             txt_file = yaml_dir / Path(cfg[key]).name
             if txt_file.is_file():
                 try:
@@ -342,17 +344,17 @@ def ensure_portable_data_yaml(yaml_path: Path) -> Path:
                             new_lines.append(line_str)
                     if lines_changed:
                         txt_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-                        print(f"[INFO] Poprawiono ścieżki na relatywne w: {txt_file}")
+                        print(f"[Info] Converted paths to relative in: {txt_file}")
                 except Exception as e:
-                    print(f"[OSTRZEŻENIE] Błąd naprawy manifestu {txt_file}: {e}")
+                    print(f"[Warning] Failed updating manifest {txt_file}: {e}")
 
     if modified:
         try:
             with open(yaml_path, "w", encoding="utf-8") as f:
                 yaml.dump(cfg, f, sort_keys=False, allow_unicode=True)
-            print(f"[INFO] Zaktualizowano konfigurację {yaml_path} na ścieżki relatywne.")
+            print(f"[Info] Updated configuration {yaml_path} with relative paths.")
         except Exception as e:
-            print(f"[OSTRZEŻENIE] Nie udało się zapisać poprawionego {yaml_path}: {e}")
+            print(f"[Warning] Could not write updated {yaml_path}: {e}")
 
     return yaml_path
 
@@ -372,14 +374,12 @@ def trenuj_i_ewaluuj(
     test_images_dir: Optional[Union[str, Path]] = None,
     test_labels_dir: Optional[Union[str, Path]] = None,
 ):
-    """Główna funkcja wykonująca trening (z wagami), zapis wag, ewaluację i testy zewnętrzne."""
+    """Main execution function for training, metric validation, and external testing."""
     import torch
 
-    # Automatyczny wybór urządzenia (CUDA / GPU lub CPU)
     if device is None:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-    # Automatyczne wyszukanie pliku data.yaml (priorytet dla zwagowanych danych)
     if data_yaml is None:
         candidates = [
             OUTPUTS_DIR / "datasets" / "data_weighted" / "data_weighted.yaml",
@@ -393,13 +393,12 @@ def trenuj_i_ewaluuj(
                 data_yaml = c
                 break
         if data_yaml is None or not Path(data_yaml).exists():
-            print("[INFO] Brak data_weighted.yaml. Uruchamiam automatyczne wagowanie...")
+            print("[Info] data_weighted.yaml not found. Running automatic dataset weighting...")
             from src.scripts.weight_dataset import process_concatenated_dataset
             data_yaml = process_concatenated_dataset(REPO_ROOT / "data" / "data_concatenated")
 
     data_yaml = ensure_portable_data_yaml(Path(data_yaml))
 
-    # Sprawdzenie wag bazowych w outputs/weights/ lub outputs/models/
     WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -422,7 +421,6 @@ def trenuj_i_ewaluuj(
         shutil.copy2(p_model, target_pt)
         model_name = str(target_pt.resolve())
 
-    # Jeśli podano własne weights_path, upewnij się że szukamy w outputs/
     if weights_path:
         p_wp = Path(weights_path)
         if not p_wp.is_file():
@@ -436,28 +434,28 @@ def trenuj_i_ewaluuj(
                 weights_path = str(target_wp.resolve())
 
     print("====================================================================")
-    print(" 1. TRENING MODELU YOLOV8 (Z UWZGLĘDNIENIEM WAG)")
+    print(" 1. YOLOV8 MODEL TRAINING")
     print("====================================================================")
-    print(f"[YOLOv8] Urządzenie obliczeniowe: {device} (CUDA: {torch.cuda.is_available()})")
+    print(f"[YOLOv8] Device:                 {device} (CUDA available: {torch.cuda.is_available()})")
     if torch.cuda.is_available() and device != "cpu":
         try:
-            print(f"[YOLOv8] Karta graficzna (GPU): {torch.cuda.get_device_name(0)}")
+            print(f"[YOLOv8] GPU:                    {torch.cuda.get_device_name(0)}")
         except Exception:
             pass
-    print(f"[YOLOv8] Zbiór danych:           {data_yaml}")
-    print(f"[YOLOv8] Model bazowy:           {model_name}")
-    print(f"[YOLOv8] Parametry:              Epoki: {epochs}, Imgsz: {imgsz}, Batch: {batch}, Cache: {cache}, Optimizer: {optimizer}, Workers: {workers}")
-    print(f"[YOLOv8] Katalog wyjściowy runs: {RUNS_DIR}")
+    print(f"[YOLOv8] Dataset:                {data_yaml}")
+    print(f"[YOLOv8] Base model:             {model_name}")
+    print(f"[YOLOv8] Params:                 Epochs: {epochs}, Imgsz: {imgsz}, Batch: {batch}, Cache: {cache}, Optimizer: {optimizer}, Workers: {workers}")
+    print(f"[YOLOv8] Output runs dir:        {RUNS_DIR}")
 
     best_weights_file = MODELS_DIR / "ragwort_yolov8_best.pt"
 
     if skip_train and (weights_path or best_weights_file.exists()):
         chosen_weight = weights_path or str(best_weights_file)
-        print(f"[INFO] Pomijam trening. Ładuję istniejące wagi: {chosen_weight}")
+        print(f"[Info] Skipping training. Loading existing weights: {chosen_weight}")
         model = YOLOv8(chosen_weight, device=device)
     else:
         if not data_yaml.exists():
-            raise FileNotFoundError(f"Brak pliku konfiguracji danych: {data_yaml}!")
+            raise FileNotFoundError(f"Dataset configuration not found: {data_yaml}!")
 
         model = YOLOv8(model_name, device=device)
 
@@ -483,13 +481,12 @@ def trenuj_i_ewaluuj(
             shutil.copy2(trained_best, best_weights_file)
             shutil.copy2(trained_best, WEIGHTS_DIR / "ragwort_yolov8_best.pt")
             shutil.copy2(trained_best, WEIGHTS_DIR / "best.pt")
-            print(f"\n[WAGI] Zapisano najlepsze wagi w: {best_weights_file} oraz {WEIGHTS_DIR / 'best.pt'}")
+            print(f"\n[Weights] Saved best weights to: {best_weights_file} and {WEIGHTS_DIR / 'best.pt'}")
 
         trained_last = RUNS_DIR / "ragwort_yolov8_weighted" / "weights" / "last.pt"
         if trained_last.exists():
             shutil.copy2(trained_last, WEIGHTS_DIR / "last.pt")
 
-        # Automatyczne usunięcie przypadkowo utworzonego katalogu 'weights/' w root
         root_w = REPO_ROOT / "weights"
         if root_w.is_dir() and root_w.resolve() != WEIGHTS_DIR.resolve():
             for f in root_w.iterdir():
@@ -501,21 +498,20 @@ def trenuj_i_ewaluuj(
                 pass
 
     print("\n====================================================================")
-    print(" 2. WALIDACJA MODELU NA ZBIORZE TESTOWYM (YOLO Metrics)")
+    print(" 2. MODEL VALIDATION ON TEST SPLIT (YOLO Metrics)")
     print("====================================================================")
     try:
         metrics = model.val(data=str(data_yaml), imgsz=imgsz, split="val", device=device, verbose=False)
         print(f"mAP@50               : {metrics.box.map50:.4f}")
         print(f"mAP@50-95            : {metrics.box.map:.4f}")
-        print(f"Precyzja (Precision) : {metrics.box.mp:.4f}")
-        print(f"Czułość (Recall)     : {metrics.box.mr:.4f}")
+        print(f"Precision            : {metrics.box.mp:.4f}")
+        print(f"Recall               : {metrics.box.mr:.4f}")
     except Exception as e:
-        print(f"[OSTRZEŻENIE] Nie udało się przeprowadzić standardowej walidacji YOLO: {e}")
+        print(f"[Warning] YOLO validation encountered an issue: {e}")
 
     print("\n====================================================================")
-    print(" 3. EWALUACJA Z UŻYCIEM FUNKCJI data_eval (IoU = 0.5)")
+    print(" 3. CUSTOM EVALUATION (IoU = 0.5)")
     print("====================================================================")
-    # Wyznaczenie folderu testowego
     t_img = test_images_dir
     t_lbl = test_labels_dir
     if t_img is None or not Path(t_img).exists():
@@ -531,43 +527,43 @@ def trenuj_i_ewaluuj(
                 break
 
     if t_img and Path(t_img).exists() and t_lbl and Path(t_lbl).exists():
-        print(f"[data_eval] Obliczanie IoU, Precision, Recall na: {t_img}")
+        print(f"[data_eval] Evaluating Precision, Recall, and F1 on: {t_img}")
         ground_truth = wczytaj_poprawne_dane_z_folderu(Path(t_img), Path(t_lbl))
         predictions = model.predict_for_eval(Path(t_img), conf=0.25)
         ewaluacja_modelu(str(t_img), predictions, ground_truth, prog_iou=0.5)
     else:
-        print("[OSTRZEŻENIE] Brak podzbioru testowego do ewaluacji data_eval.")
+        print("[Warning] No test split directory available for custom evaluation.")
 
     print("\n====================================================================")
-    print(" 4. TESTY NA NOWYCH ZDJĘCIACH Z INTERNETU")
+    print(" 4. EXTERNAL TEST IMAGES GENERALIZATION")
     print("====================================================================")
     try:
-        zewn_zdjecia = pobierz_zewnetrzne_zdjecia()
-        testuj_zewnetrzne_zdjecia(model, zewn_zdjecia)
+        external_images = pobierz_zewnetrzne_zdjecia()
+        testuj_zewnetrzne_zdjecia(model, external_images)
     except Exception as e:
-        print(f"[OSTRZEŻENIE] Testy zewnętrzne pominięte: {e}")
+        print(f"[Warning] External tests skipped: {e}")
 
     print("\n====================================================================")
-    print(" ZAKOŃCZONO CAŁY PROCES POMYŚLNIE!")
+    print(" YOLO PIPELINE COMPLETED SUCCESSFULLY!")
     print("====================================================================")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="data_eval - Trening YOLOv8 (z wagami) i ewaluacja detekcji.",
+        description="Train and evaluate YOLOv8 model on weighted datasets.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--data", type=str, default=None, help="Ścieżka do data.yaml (domyślnie auto-wykrywanie data_weighted.yaml)")
-    parser.add_argument("--device", type=str, default=None, help="Urządzenie: '0' (CUDA/GPU), 'cpu' (domyślnie: auto-wykrycie CUDA)")
-    parser.add_argument("--model", type=str, default="yolov8s.pt", help="Wagi modelu bazowego (domyślnie: yolov8s.pt - Small)")
-    parser.add_argument("--epochs", type=int, default=50, help="Liczba epok treningu (domyślnie: 50)")
-    parser.add_argument("--imgsz", type=int, default=640, help="Rozdzielczość obrazu (domyślnie: 640)")
-    parser.add_argument("--batch", type=int, default=16, help="Rozmiar batcha (domyślnie: 16, zmniejsz do 8 przy małym VRAM)")
-    parser.add_argument("--workers", type=int, default=8, help="Liczba wątków loadera danych (domyślnie: 8 dla procesora 6c/12t)")
-    parser.add_argument("--cache", type=str, default="none", choices=["none", "ram", "disk"], help="Cache obrazów: 'ram' (w pamięci RAM), 'disk' lub 'none' (domyślnie)")
-    parser.add_argument("--optimizer", type=str, default="AdamW", choices=["AdamW", "SGD", "Adam", "auto"], help="Optymalizator (domyślnie: AdamW, stabilny i bezpieczny na GPU)")
-    parser.add_argument("--skip-train", action="store_true", help="Pomiń trening i załaduj istniejące wagi")
-    parser.add_argument("--weights", type=str, default=None, help="Własna ścieżka do wag .pt")
+    parser.add_argument("--data", type=str, default=None, help="Path to data.yaml (default: auto-detect data_weighted.yaml)")
+    parser.add_argument("--device", type=str, default=None, help="Device: '0' (CUDA/GPU), 'cpu' (default: auto-detect)")
+    parser.add_argument("--model", type=str, default="yolov8s.pt", help="Base model weights (default: yolov8s.pt)")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs (default: 50)")
+    parser.add_argument("--imgsz", type=int, default=640, help="Image resolution (default: 640)")
+    parser.add_argument("--batch", type=int, default=16, help="Batch size (default: 16)")
+    parser.add_argument("--workers", type=int, default=8, help="DataLoader worker processes (default: 8)")
+    parser.add_argument("--cache", type=str, default="none", choices=["none", "ram", "disk"], help="Image cache option")
+    parser.add_argument("--optimizer", type=str, default="AdamW", choices=["AdamW", "SGD", "Adam", "auto"], help="Optimizer (default: AdamW)")
+    parser.add_argument("--skip-train", action="store_true", help="Skip training and load existing weights")
+    parser.add_argument("--weights", type=str, default=None, help="Custom path to model weights .pt")
     args = parser.parse_args()
 
     cache_val: Union[bool, str] = False

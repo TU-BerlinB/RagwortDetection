@@ -1,25 +1,20 @@
 """
-prepare_weighted_dataset.py
-
-Skrypt do obslugi struktury:
-  - good/   -> zdjecia idealne (wysokiej jakosci, zrobione z gory, precyzyjne)
-  - other/  -> pozostale zdjecia (gorszej jakosci, szum, trudne warunki)
-
-Skrypt:
-1. Zbiera zdjecia z folderow 'good' i 'other'.
-2. Automatycznie dopasowuje etykiety .txt (szuka ich w folderach wejsciowych lub w bazie data/).
-3. Przypisuje wagi (np. 15x dla 'good', 1x dla 'other') za pomoca Weighted Resampling.
-4. Tworzy w pelni PRZENOSNY zbior danych w folderze 'dataset_export_ready/':
-   - relatywne sciezki (dziala na dowolnym systemie: Windows / Linux / Google Colab),
-   - plik data.yaml z podpietym train_weighted.txt,
-   - gotowe skrypty startowe train.py, run_train.bat i run_train.sh.
-5. Opcjonalnie pakuje calosc do 'dataset_export_ready.zip', gotowego do wyslania na pendrive/dysk.
+File: src/scripts/prepare_weighted_dataset.py
+Usage:
+    python src/scripts/prepare_weighted_dataset.py
+    python src/scripts/prepare_weighted_dataset.py --good-weight 15 --other-weight 1
+    python src/scripts/prepare_weighted_dataset.py --no-zip
+Description:
+    Assembles a weighted training dataset from 'good' (high quality) and 'other' image directories,
+    resolves corresponding YOLO .txt labels, applies weighted resampling multipliers,
+    and exports a portable dataset package with relative paths (and optional ZIP archive).
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import random
 import shutil
 import sys
 import zipfile
@@ -32,22 +27,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def find_label_file(img_name: str, search_dirs: List[Path]) -> Optional[Path]:
-    """Wyszukuje plik etykiety .txt dla zadanego zdjecia w liscie katalogow."""
+    """Search for matching .txt label file for an image across candidate directories."""
     stem = Path(img_name).stem
     txt_name = f"{stem}.txt"
 
     for d in search_dirs:
         if not d.exists():
             continue
-        # Bezposrednio w katalogu
         candidate = d / txt_name
         if candidate.is_file():
             return candidate
-        # W podkatalogu labels
         sub_candidate = d / "labels" / txt_name
         if sub_candidate.is_file():
             return sub_candidate
-        # Rekurencyjnie w labels (np. train/labels)
         for found in d.glob(f"**/{txt_name}"):
             if found.is_file():
                 return found
@@ -74,7 +66,6 @@ def prepare_dataset(
 
     valid_exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
-    # Utworz foldery wejsciowe jesli nie istnieja
     good_dir.mkdir(parents=True, exist_ok=True)
     other_dir.mkdir(parents=True, exist_ok=True)
 
@@ -82,21 +73,20 @@ def prepare_dataset(
     other_images = [p for p in other_dir.iterdir() if p.is_file() and p.suffix.lower() in valid_exts]
 
     if not good_images and not other_images:
-        print(f"\n[!] Foldery sa puste! Utworzono dla Ciebie katalogi:")
-        print(f"    - GOOD (zdjecia idealne):  {good_dir}")
-        print(f"    - OTHER (pozostale):       {other_dir}")
-        print("Wrzuc tam pliki zdjec (i opcjonalnie pliki .txt z etykietami) i uruchom skrypt ponownie.\n")
+        print("\n[!] Input directories are empty. Created directories:")
+        print(f"    - GOOD (ideal images):  {good_dir}")
+        print(f"    - OTHER (remaining):    {other_dir}")
+        print("Place images there and re-run this script.\n")
         return output_dir
 
     print("=" * 70)
-    print(" PRZYGOTOWYWANIE WAZONEGO ZBIORU DANYCH DO EKSPORTU")
+    print(" PREPARING WEIGHTED DATASET FOR EXPORT")
     print("=" * 70)
-    print(f"Folder GOOD:    {good_dir} ({len(good_images)} zdjec, waga = {good_weight}x)")
-    print(f"Folder OTHER:   {other_dir} ({len(other_images)} zdjec, waga = {other_weight}x)")
-    print(f"Katalog wyjscia: {output_dir}")
+    print(f"Directory GOOD:   {good_dir} ({len(good_images)} images, weight = {good_weight}x)")
+    print(f"Directory OTHER:  {other_dir} ({len(other_images)} images, weight = {other_weight}x)")
+    print(f"Output directory: {output_dir}")
     print("=" * 70)
 
-    # Sciezki do przeszukania w poszukiwaniu istniejacych etykiet .txt
     label_search_dirs = [
         good_dir,
         other_dir,
@@ -107,8 +97,6 @@ def prepare_dataset(
         REPO_ROOT / "data",
     ]
 
-    # Podzial na train i val (zrownowazony dla obu grup)
-    import random
     random.seed(42)
 
     def split_set(items: List[Path], ratio: float) -> Tuple[List[Path], List[Path]]:
@@ -125,7 +113,6 @@ def prepare_dataset(
     ]
     val_all_images = [(p, "good") for p in val_good] + [(p, "other") for p in val_other]
 
-    # Przygotowanie struktury docelowej
     out_train_img = output_dir / "images" / "train"
     out_val_img = output_dir / "images" / "val"
     out_train_lbl = output_dir / "labels" / "train"
@@ -141,7 +128,6 @@ def prepare_dataset(
             except Exception:
                 shutil.copy2(src, dst)
 
-    # Kopiowanie zdjec treningowych i etykiet
     missing_labels = []
     train_txt_relative_lines: List[str] = []
 
@@ -149,22 +135,18 @@ def prepare_dataset(
         dest_img = out_train_img / img_path.name
         copy_file_or_link(img_path, dest_img)
 
-        # Dopasowanie etykiety
         lbl_file = find_label_file(img_path.name, label_search_dirs)
         dest_lbl = out_train_lbl / f"{img_path.stem}.txt"
         if lbl_file and lbl_file.exists():
             copy_file_or_link(lbl_file, dest_lbl)
         else:
-            # Tworzymy pusta etykiete (obraz tla)
             dest_lbl.write_text("", encoding="utf-8")
             missing_labels.append(img_path.name)
 
-        # Relatywna sciezka dla YOLO (uzywamy forward slash dla przenosnosci)
         rel_img_path = f"images/train/{img_path.name}"
         for _ in range(weight):
             train_txt_relative_lines.append(rel_img_path)
 
-    # Kopiowanie zdjec walidacyjnych
     val_txt_relative_lines: List[str] = []
     for img_path, category in val_all_images:
         dest_img = out_val_img / img_path.name
@@ -180,9 +162,8 @@ def prepare_dataset(
         val_txt_relative_lines.append(f"images/val/{img_path.name}")
 
     if missing_labels:
-        print(f"[Uwaga] Dla {len(missing_labels)} zdjec nie znaleziono pliku .txt (zapisano jako puste tlo).")
+        print(f"[Notice] For {len(missing_labels)} images no .txt label was found (saved as empty negative background).")
 
-    # Zapisz train_weighted.txt i val.txt
     manifest_train = output_dir / "train_weighted.txt"
     with open(manifest_train, "w", encoding="utf-8") as f:
         f.write("\n".join(train_txt_relative_lines) + "\n")
@@ -191,9 +172,8 @@ def prepare_dataset(
     with open(manifest_val, "w", encoding="utf-8") as f:
         f.write("\n".join(val_txt_relative_lines) + "\n")
 
-    # Zapisz data.yaml z RELATYWNYMI sciezkami (przenosny na dowolny komputer!)
     data_yaml_content = {
-        "path": ".",  # Kluczowe dla przenosnosci: biezacy katalog z data.yaml
+        "path": ".",
         "train": "train_weighted.txt",
         "val": "val.txt",
         "nc": len(class_names),
@@ -204,13 +184,10 @@ def prepare_dataset(
     with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.dump(data_yaml_content, f, sort_keys=False, allow_unicode=True)
 
-    # Generowanie gotowego skryptu treningowego train.py dla drugiego komputera
-    train_script_content = f'''"""
-train.py - Gotowy skrypt do odpalenia treningu YOLOv8 na Twoim drugim komputerze.
-Uruchomienie:
+    train_script_content = '''"""
+train.py - Standalone training script for YOLOv8 on exported dataset.
+Usage:
     python train.py
-Lub z wiersza polecen (CLI):
-    yolo detect train model=yolov8m.pt data=data.yaml epochs=50 imgsz=640 batch=16 device=0
 """
 
 import torch
@@ -218,27 +195,14 @@ from ultralytics import YOLO
 
 def main():
     device = "0" if torch.cuda.is_available() else "cpu"
-    print("=" * 60)
-    print(" START TRENINGU YOLOV8 NA DRUGIM KOMPUTERZE")
-    print(f" Urzadzenie: {{device}} (CUDA dostepne: {{torch.cuda.is_available()}})")
-    print("=" * 60)
+    print(f"Training device: {device} (CUDA: {torch.cuda.is_available()})")
 
-    # Modele YOLOv8 wieksze od nano:
-    # - 'yolov8s.pt' (Small - lekki, ale 3x dokladniejszy od nano)
-    # - 'yolov8m.pt' (Medium - REKOMENDOWANY kompromis dokladnosci i predkosci)
-    # - 'yolov8l.pt' (Large - bardzo dokladny, wymaga min. 8-12 GB VRAM)
-    # - 'yolov8x.pt' (XLarge - maksymalna dokladnosc, wymaga mocnej karty)
-    
-    model_name = "yolov8s.pt"
-    print(f"Pobieranie i ladowanie modelu: {{model_name}}...")
-    model = YOLO(model_name)
-
-    # Uruchomienie treningu z uzyciem zbalansowanego pliku data.yaml
-    results = model.train(
+    model = YOLO("yolov8s.pt")
+    model.train(
         data="data.yaml",
-        epochs=50,          # 50 epok da swietny rezultat na zwagowanych danych
-        imgsz=640,          # rozdzielczosc
-        batch=16,           # zmniejsz do 8 jesli zabraknie pamieci VRAM
+        epochs=50,
+        imgsz=640,
+        batch=16,
         device=device,
         workers=4,
         save=True,
@@ -246,9 +210,7 @@ def main():
         name="yolov8s_weighted",
         exist_ok=True,
     )
-
-    print("\\nTrening zakonczony!")
-    print("Najlepsze wagi zapisuja sie w: runs_ragwort/yolov8s_weighted/weights/best.pt")
+    print("Training finished.")
 
 if __name__ == "__main__":
     main()
@@ -256,12 +218,10 @@ if __name__ == "__main__":
     with open(output_dir / "train.py", "w", encoding="utf-8") as f:
         f.write(train_script_content)
 
-    # Skrypt startowy .bat (dla Windows na drugim PC)
-    bat_content = "@echo off\necho Instalowanie zaleznosci...\npip install ultralytics torch torchvision\necho Uruchamianie treningu YOLOv8 Medium...\npython train.py\npause\n"
+    bat_content = "@echo off\npip install ultralytics torch torchvision\npython train.py\npause\n"
     with open(output_dir / "run_train.bat", "w", encoding="utf-8") as f:
         f.write(bat_content)
 
-    # Skrypt startowy .sh (dla Linux / Google Colab)
     sh_content = "#!/bin/bash\npip install ultralytics torch torchvision\npython train.py\n"
     with open(output_dir / "run_train.sh", "w", encoding="utf-8") as f:
         f.write(sh_content)
@@ -271,74 +231,72 @@ if __name__ == "__main__":
     weighted_good_samples = total_good_train * good_weight
     weighted_other_samples = total_other_train * other_weight
     total_samples = weighted_good_samples + weighted_other_samples
-
     pct_good = (weighted_good_samples / total_samples * 100) if total_samples > 0 else 0
 
     print("\n" + "=" * 70)
-    print(" SUKCES! ZBIOR ZOSTAL SKONFIGUROWANY I PRZYGOTOWANY")
+    print(" DATASET EXPORT READY")
     print("=" * 70)
-    print(f"Trening (train):")
-    print(f"  - Unikalne zdjecia GOOD:  {total_good_train} szt. (waga {good_weight}x -> {weighted_good_samples} probek)")
-    print(f"  - Unikalne zdjecia OTHER: {total_other_train} szt. (waga {other_weight}x -> {weighted_other_samples} probek)")
-    print(f"  - Lacznie na epoke:       {total_samples} krokow treningowych")
-    print(f"  - Udzial zdjec GOOD:      {pct_good:.1f}% gradientow w kazdej epoce!")
-    print(f"Walidacja (val):")
-    print(f"  - Zdjecia testowe:        {len(val_all_images)} szt.")
+    print(f"Training:")
+    print(f"  - Unique GOOD images:  {total_good_train} (weight {good_weight}x -> {weighted_good_samples} samples)")
+    print(f"  - Unique OTHER images: {total_other_train} (weight {other_weight}x -> {weighted_other_samples} samples)")
+    print(f"  - Total steps/epoch:   {total_samples}")
+    print(f"  - GOOD images share:   {pct_good:.1f}%")
+    print(f"Validation:")
+    print(f"  - Test images:         {len(val_all_images)}")
     print("=" * 70)
 
-    # Opcjonalne spakowanie do ZIP dla latwego transferu
     if make_zip:
         zip_path = output_dir.parent / f"{output_dir.name}.zip"
-        print(f"\n[Pakowanie] Tworzenie archiwum ZIP do transferu: {zip_path}...")
+        print(f"\n[Packaging] Creating ZIP archive: {zip_path}...")
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for root, _, files in os.walk(output_dir):
                 for file in files:
                     file_p = Path(root) / file
                     rel_p = file_p.relative_to(output_dir.parent)
                     zf.write(file_p, arcname=str(rel_p))
-        print(f"[Pakowanie] Gotowe! Archiwum ZIP: {zip_path}")
+        print(f"[Packaging] Finished ZIP archive: {zip_path}")
 
     return output_dir
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Przygotowuje wazony, samowystarczalny zbior danych z folderow 'good' i 'other'."
+        description="Prepare a weighted standalone dataset from 'good' and 'other' image folders."
     )
     parser.add_argument(
         "--good-dir",
         type=Path,
         default=REPO_ROOT / "dataset_input" / "good",
-        help="Folder ze zdjeciami idealnymi (domyslnie: dataset_input/good)",
+        help="Directory with ideal images (default: dataset_input/good)",
     )
     parser.add_argument(
         "--other-dir",
         type=Path,
         default=REPO_ROOT / "dataset_input" / "other",
-        help="Folder z pozostalymi zdjeciami (domyslnie: dataset_input/other)",
+        help="Directory with other images (default: dataset_input/other)",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=REPO_ROOT / "dataset_export_ready",
-        help="Katalog docelowy przygotowany do transferu",
+        help="Target export directory",
     )
     parser.add_argument(
         "--good-weight",
         type=int,
         default=15,
-        help="Waga / mnoznik dla zdjec idealnych (domyslnie: 15x)",
+        help="Oversampling multiplier for good images (default: 15x)",
     )
     parser.add_argument(
         "--other-weight",
         type=int,
         default=1,
-        help="Waga dla pozostalych zdjec (domyslnie: 1x)",
+        help="Multiplier for other images (default: 1x)",
     )
     parser.add_argument(
         "--no-zip",
         action="store_true",
-        help="Nie twórz pliku ZIP",
+        help="Do not create ZIP archive",
     )
     return parser.parse_args()
 
@@ -346,7 +304,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Sprawdz czy uzytkownik nie stworzyl folderow 'good' i 'other' bezposrednio w root projektu
     good_dir = args.good_dir
     other_dir = args.other_dir
 

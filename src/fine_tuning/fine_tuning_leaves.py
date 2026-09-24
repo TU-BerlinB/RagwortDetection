@@ -1,39 +1,16 @@
 """
-fine_tuning_leaves.py
-
-Rozszerzenie pipeline'u fine-tuningu o kolejne etapy (Stages 3, 4 i 5):
-Ukierunkowane na naukę cech strukturalnych, liści i geometrii starca jakubka (Ragwort),
-zamiast polegania wyłącznie na żółtym kolorze kwiatów.
-
-Etapy:
-  1. Stage 3 — Zwiększona rozdzielczość:
-     - Start od checkpointu z Stage 2 (outputs/fine_labeling_results/stage2/best.pt).
-     - Użycie danych zwagowanych z etapu 2.
-     - Zwiększenie rozdzielczości do imgsz=1024.
-     - Niski learning rate (lr0=0.0005), optymalizator AdamW.
-     - Zapis do outputs/fine_labeling_results/leaves_stage3_resolution.
-
-  2. Stage 4 — Wymuszenie nauki cech liści (Augmentacja):
-     - Start od najlepszego modelu z Stage 3.
-     - Włączenie mocnych augmentacji:
-       erasing=0.4 (losowe wymazywanie/cutout, przesłanianie kwiatów),
-       hsv_s=0.8 (drastyczna zmiana nasycenia barw),
-       hsv_v=0.5 (duża zmienność jasności),
-       imgsz=1024.
-     - Niski learning rate (lr0=0.0003).
-     - Zapis do outputs/fine_labeling_results/leaves_stage4_augmentation.
-
-  3. Stage 5 — Trening na zdjęciach bez koloru żółtego (No-Yellow):
-     - Start od najlepszego modelu z Stage 4.
-     - Utworzenie kopii danych treningowych (oryginalne dane pozostają nietknięte).
-     - Zastosowanie kontrolowanej transformacji w przestrzeni HSV:
-       desaturacja pikseli w zakresie żółci (H in [18, 36]) do neutralnych odcieni,
-       przy zachowaniu naturalnych zielonych barw liści (H in [38, 85]) oraz geometrii/etykiet.
-     - Trening na imgsz=1024 z niskim learning rate (lr0=0.0003).
-     - Zapis do outputs/fine_labeling_results/leaves_stage5_no_yellow.
-
-Podsumowanie:
-  Zestawienie metryk Stage 2 -> Stage 3 -> Stage 4 -> Stage 5 na wspólnym zbiorze walidacyjnym.
+File: src/fine_tuning/fine_tuning_leaves.py
+Usage:
+    python src/fine_tuning/fine_tuning_leaves.py --model outputs/fine_labeling_results/stage2/best.pt
+    # To run validation only:
+    python src/fine_tuning/fine_tuning_leaves.py --val-only
+Description:
+    Extended fine-tuning pipeline focusing on ragwort leaf geometry and structural features:
+      - Stage 3: Increased input resolution (imgsz=1024)
+      - Stage 4: Leaf-focused augmentations (random erasing of flowers, HSV jitter)
+      - Stage 5: No-Yellow training with flowers desaturated to force learning leaf characteristics
+    Evaluates checkpoints across Stages 2, 3, 4, and 5 on a shared validation set
+    and exports comparison summary reports.
 """
 
 from __future__ import annotations
@@ -51,12 +28,10 @@ import numpy as np
 import torch
 import yaml
 
-# Dodanie katalogu głównego do sys.path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Konfiguracja katalogów Ultralytics
 FINE_RESULTS_DIR = REPO_ROOT / "outputs" / "fine_labeling_results"
 STAGE2_DEFAULT_MODEL = FINE_RESULTS_DIR / "stage2" / "best.pt"
 DATASETS_DIR = FINE_RESULTS_DIR / "datasets"
@@ -83,13 +58,13 @@ from src.fine_tuning.fine_tuning import (
 
 def remove_yellow_from_image(img_bgr: np.ndarray) -> np.ndarray:
     """
-    Wykonuje kontrolowaną modyfikację kolorystyczną w przestrzeni barw HSV:
-    usuwa/desaturuje charakterystyczny żółty kolor kwiatów,
-    pozostawiając naturalne odcienie zielonych liści i tła nienaruszone.
+    Perform controlled HSV color space manipulation:
+    desaturates distinctive yellow flower petals while preserving natural
+    green leaf tones, stems, and background colors.
 
-    Parametry HSV w OpenCV:
-      - Żółty (kwiaty starca): H in [18, 36], S >= 40, V >= 50
-      - Zielony (liście i łodygi): H in [38, 85] (brak nakładania się masek)
+    OpenCV HSV parameters:
+      - Yellow flower petals: H in [18, 36], S >= 40, V >= 50
+      - Green leaves and stems: H in [38, 85] (no mask overlap)
     """
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     lower_yellow = np.array([18, 40, 50], dtype=np.uint8)
@@ -97,7 +72,7 @@ def remove_yellow_from_image(img_bgr: np.ndarray) -> np.ndarray:
 
     yellow_mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
 
-    # Desaturacja żółtych pikseli (kwiaty stają się neutralnie białawo-szare jak po przekwitnieniu)
+    # Desaturate yellow pixels so flowers appear as neutral off-white / withered grey
     h, s, v = cv2.split(hsv)
     s_modified = np.where(yellow_mask > 0, (s * 0.05).astype(np.uint8), s)
     modified_hsv = cv2.merge([h, s_modified, v])
@@ -111,8 +86,8 @@ def prepare_no_yellow_dataset(
     val_manifest: Path,
 ) -> Path:
     """
-    Przygotowuje kopię danych treningowych z usuniętym kolorem żółtym.
-    Oryginalne dane w data/ pozostają całkowicie nienaruszone.
+    Generate a transformed training dataset copy with yellow color desaturated.
+    Original dataset files in data/ remain completely unmodified.
     """
     output_dataset_dir.mkdir(parents=True, exist_ok=True)
     images_out = output_dataset_dir / "images"
@@ -121,18 +96,18 @@ def prepare_no_yellow_dataset(
     labels_out.mkdir(parents=True, exist_ok=True)
 
     print("\n" + "=" * 78)
-    print(" PRZYGOTOWANIE DATASETU NO-YELLOW (ETAP 5)")
-    print(f" Manifest źródłowy: {source_manifest}")
-    print(f" Katalog docelowy:  {output_dataset_dir}")
+    print(" PREPARING NO-YELLOW DATASET (STAGE 5)")
+    print(f" Source manifest: {source_manifest}")
+    print(f" Output dir:      {output_dataset_dir}")
     print("=" * 78)
 
     if not source_manifest.is_file():
-        raise FileNotFoundError(f"Brak pliku manifestu źródłowego: {source_manifest}")
+        raise FileNotFoundError(f"Source manifest not found: {source_manifest}")
 
     lines = source_manifest.read_text(encoding="utf-8").splitlines()
     unique_image_paths = sorted(list(set(l.strip() for l in lines if l.strip())))
 
-    print(f"[No-Yellow] Przetwarzanie {len(unique_image_paths)} unikalnych zdjęć...")
+    print(f"[No-Yellow] Processing {len(unique_image_paths)} unique images...")
 
     rel_to_transformed: Dict[str, str] = {}
     converted_count = 0
@@ -145,12 +120,10 @@ def prepare_no_yellow_dataset(
         if not p.is_file():
             continue
 
-        # Nowa unikalna nazwa pliku w no-yellow dataset
         out_img_name = f"noyellow_{p.stem}{p.suffix.lower()}"
         out_img_path = images_out / out_img_name
         out_lbl_path = labels_out / f"{out_img_name.rsplit('.', 1)[0]}.txt"
 
-        # Kopiowanie i modyfikacja obrazu tylko jeśli jeszcze nie istnieje
         if not out_img_path.is_file():
             img_bgr = cv2.imread(str(p))
             if img_bgr is not None:
@@ -160,9 +133,7 @@ def prepare_no_yellow_dataset(
             else:
                 shutil.copy2(p, out_img_path)
 
-        # Dopasowanie etykiety .txt
         if not out_lbl_path.is_file():
-            # Szukanie etykiety w oryginalnych lokalizacjach
             stem = p.stem
             cand_lbls = [
                 p.parent / f"{stem}.txt",
@@ -181,17 +152,15 @@ def prepare_no_yellow_dataset(
             else:
                 out_lbl_path.write_text("", encoding="utf-8")
 
-        # Zapisz relatywną ścieżkę do nowego manifestu
         try:
             rel_to_repo = out_img_path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
         except ValueError:
             rel_to_repo = str(out_img_path.resolve())
         rel_to_transformed[line_path] = rel_to_repo
 
-    print(f"[No-Yellow] Zmodyfikowano {converted_count} zdjęć (usunięto żółty kolor kwiatów).")
-    print(f"[No-Yellow] Etykiety i geometria zachowane 1:1.")
+    print(f"[No-Yellow] Modified {converted_count} images (desaturated yellow flower pixels).")
+    print(f"[No-Yellow] Annotations and image geometries preserved 1:1.")
 
-    # Budowa nowego manifestu treningowego ze zbalansowanymi wagami z source_manifest
     new_train_lines = []
     for l in lines:
         raw_l = l.strip()
@@ -201,8 +170,8 @@ def prepare_no_yellow_dataset(
     train_no_yellow_txt = output_dataset_dir / "train_no_yellow.txt"
     train_no_yellow_txt.write_text("\n".join(new_train_lines) + "\n", encoding="utf-8")
 
-    # Tworzenie pliku data.yaml
     no_yellow_yaml = output_dataset_dir / "data_no_yellow.yaml"
+
     def get_rel_str(p: Path) -> str:
         try:
             return str(p.resolve().relative_to(REPO_ROOT.resolve()).as_posix())
@@ -220,8 +189,8 @@ def prepare_no_yellow_dataset(
     with open(no_yellow_yaml, "w", encoding="utf-8") as f:
         yaml.dump(cfg, f, sort_keys=False, allow_unicode=True)
 
-    print(f"[No-Yellow] Manifest zapisano: {train_no_yellow_txt}")
-    print(f"[No-Yellow] Plik YAML:          {no_yellow_yaml}")
+    print(f"[No-Yellow] Saved training manifest: {train_no_yellow_txt}")
+    print(f"[No-Yellow] Saved YAML config:        {no_yellow_yaml}")
     print("=" * 78)
 
     return no_yellow_yaml
@@ -229,7 +198,7 @@ def prepare_no_yellow_dataset(
 
 class LeavesFineTuningPipeline:
     """
-    Rozszerzony potok doszkalania modelu skupiony na cechach liści i struktury:
+    Extended fine-tuning pipeline focused on leaf and structural features:
       Stage 2 (Base) -> Stage 3 (1024 Res) -> Stage 4 (Augmentations) -> Stage 5 (No-Yellow)
     """
 
@@ -248,20 +217,17 @@ class LeavesFineTuningPipeline:
         self.output_dir = Path(output_dir or FINE_RESULTS_DIR).resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Wyszukanie modelu po Stage 2
         cand_stage2 = stage2_model_path or STAGE2_DEFAULT_MODEL
         self.stage2_model_path = resolve_model_path(cand_stage2)
 
-        # Wyszukanie konfiguracji danych z poprzedniego etapu
         default_yaml = DATASETS_DIR / "stage2_data.yaml"
         self.data_yaml = Path(data_yaml or default_yaml).resolve()
         if not self.data_yaml.is_file():
-            # Fallback
             cands = list(DATASETS_DIR.glob("*data*.yaml"))
             if cands:
                 self.data_yaml = cands[0].resolve()
             else:
-                raise FileNotFoundError(f"Nie znaleziono pliku konfiguracji danych YAML: {self.data_yaml}")
+                raise FileNotFoundError(f"YAML dataset config not found: {self.data_yaml}")
 
         default_val = DATASETS_DIR / "val.txt"
         self.val_manifest = Path(val_manifest or default_val).resolve()
@@ -277,9 +243,9 @@ class LeavesFineTuningPipeline:
         self.metrics_summary: Dict[str, Dict[str, Any]] = {}
 
     def evaluate_initial_stage2(self) -> Dict[str, float]:
-        """Ewaluuje model wejściowy ze Stage 2 na rozdzielczości 1024."""
+        """Evaluate input Stage 2 model at high resolution (1024)."""
         print("\n" + "=" * 78)
-        print(" 0. EWALUACJA WYJŚCIOWA MODELU ZE STAGE 2")
+        print(" 0. BASE STAGE 2 MODEL EVALUATION")
         print(f" Checkpoint: {self.stage2_model_path}")
         print(f" Imgsz:      {self.imgsz}")
         print("=" * 78)
@@ -296,7 +262,7 @@ class LeavesFineTuningPipeline:
             "checkpoint": str(self.stage2_model_path),
             "metrics": metrics,
         }
-        self._print_metrics_block("STAGE 2 (WYJŚCIOWY)", metrics)
+        self._print_metrics_block("STAGE 2 (INPUT BASE)", metrics)
         return metrics
 
     def run_stage3(
@@ -307,17 +273,17 @@ class LeavesFineTuningPipeline:
         optimizer: str = "AdamW",
     ) -> Path:
         """
-        Stage 3: Zwiększona rozdzielczość (imgsz=1024).
+        Stage 3: Increased image resolution (imgsz=1024).
         """
         from ultralytics import YOLO
 
         print("\n" + "=" * 78)
-        print(" STAGE 3 — ZWIĘKSZONA ROZDZIELCZOŚĆ (imgsz=1024)")
-        print(f" Model wejściowy: {self.stage2_model_path}")
-        print(f" Epoki:           {epochs}")
+        print(" STAGE 3 — INCREASED RESOLUTION (imgsz=1024)")
+        print(f" Input model:     {self.stage2_model_path}")
+        print(f" Epochs:          {epochs}")
         print(f" Batch / Imgsz:   {self.batch} / {self.imgsz}")
-        print(f" Learning Rate:   lr0={lr0}, lrf={lrf}")
-        print(f" Katalog wyjścia: {self.stage3_dir}")
+        print(f" Learning rate:   lr0={lr0}, lrf={lrf}")
+        print(f" Output dir:      {self.stage3_dir}")
         print("=" * 78)
 
         self.stage3_dir.mkdir(parents=True, exist_ok=True)
@@ -347,7 +313,7 @@ class LeavesFineTuningPipeline:
             best_trained = cands[0] if cands else None
 
         if not best_trained or not best_trained.is_file():
-            raise FileNotFoundError(f"Nie znaleziono pliku wag best.pt w: {self.stage3_dir}")
+            raise FileNotFoundError(f"best.pt weights not found in: {self.stage3_dir}")
 
         best_pt = self.stage3_dir / "best.pt"
         best_pth = self.stage3_dir / "best.pth"
@@ -363,9 +329,8 @@ class LeavesFineTuningPipeline:
         except Exception:
             shutil.copy2(best_trained, best_pth)
 
-        print(f"\n[Stage 3] Zapisano checkpointy: {best_pt} oraz {last_pt}")
+        print(f"\n[Stage 3] Saved checkpoints: {best_pt} and {last_pt}")
 
-        # Ewaluacja
         metrics = evaluate_checkpoint(
             model_weight=best_pt,
             data_yaml=self.data_yaml,
@@ -392,17 +357,17 @@ class LeavesFineTuningPipeline:
         hsv_v: float = 0.5,
     ) -> Path:
         """
-        Stage 4: Wymuszenie nauki cech liści (silniejsze augmentacje erasing i HSV).
+        Stage 4: Force learning leaf characteristics via cutout/erasing and HSV jitter.
         """
         from ultralytics import YOLO
 
         print("\n" + "=" * 78)
-        print(" STAGE 4 — AUGMENTACJE I NAUKA CECH LIŚCI")
-        print(f" Model wejściowy: {stage3_weight}")
-        print(f" Epoki:           {epochs}")
-        print(f" Augmentacje:     erasing={erasing}, hsv_s={hsv_s}, hsv_v={hsv_v}")
-        print(f" Learning Rate:   lr0={lr0}, lrf={lrf}")
-        print(f" Katalog wyjścia: {self.stage4_dir}")
+        print(" STAGE 4 — AUGMENTATIONS FOR LEAF FEATURE LEARNING")
+        print(f" Input model:     {stage3_weight}")
+        print(f" Epochs:          {epochs}")
+        print(f" Augmentations:   erasing={erasing}, hsv_s={hsv_s}, hsv_v={hsv_v}")
+        print(f" Learning rate:   lr0={lr0}, lrf={lrf}")
+        print(f" Output dir:      {self.stage4_dir}")
         print("=" * 78)
 
         self.stage4_dir.mkdir(parents=True, exist_ok=True)
@@ -435,7 +400,7 @@ class LeavesFineTuningPipeline:
             best_trained = cands[0] if cands else None
 
         if not best_trained or not best_trained.is_file():
-            raise FileNotFoundError(f"Nie znaleziono pliku wag best.pt w: {self.stage4_dir}")
+            raise FileNotFoundError(f"best.pt weights not found in: {self.stage4_dir}")
 
         best_pt = self.stage4_dir / "best.pt"
         best_pth = self.stage4_dir / "best.pth"
@@ -451,9 +416,8 @@ class LeavesFineTuningPipeline:
         except Exception:
             shutil.copy2(best_trained, best_pth)
 
-        print(f"\n[Stage 4] Zapisano checkpointy: {best_pt} oraz {last_pt}")
+        print(f"\n[Stage 4] Saved checkpoints: {best_pt} and {last_pt}")
 
-        # Ewaluacja
         metrics = evaluate_checkpoint(
             model_weight=best_pt,
             data_yaml=self.data_yaml,
@@ -477,21 +441,20 @@ class LeavesFineTuningPipeline:
         optimizer: str = "AdamW",
     ) -> Path:
         """
-        Stage 5: Trening na zdjęciach bez koloru żółtego (desaturacja kwiatów, zachowanie liści).
+        Stage 5: Train on images with yellow flowers desaturated (forcing leaf shape recognition).
         """
         from ultralytics import YOLO
 
         print("\n" + "=" * 78)
-        print(" STAGE 5 — TRENING NA ZDJĘCIACH BEZ KOLORU ŻÓŁTEGO (NO-YELLOW)")
-        print(f" Model wejściowy: {stage4_weight}")
-        print(f" Epoki:           {epochs}")
-        print(f" Learning Rate:   lr0={lr0}, lrf={lrf}")
-        print(f" Katalog wyjścia: {self.stage5_dir}")
+        print(" STAGE 5 — TRAINING ON NO-YELLOW DATASET")
+        print(f" Input model:     {stage4_weight}")
+        print(f" Epochs:          {epochs}")
+        print(f" Learning rate:   lr0={lr0}, lrf={lrf}")
+        print(f" Output dir:      {self.stage5_dir}")
         print("=" * 78)
 
         self.stage5_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1. Przygotowanie odrębnego datasetu No-Yellow
         source_train_manifest = DATASETS_DIR / "stage2_train.txt"
         dataset_out = self.stage5_dir / "dataset"
         no_yellow_yaml = prepare_no_yellow_dataset(
@@ -500,7 +463,6 @@ class LeavesFineTuningPipeline:
             val_manifest=self.val_manifest,
         )
 
-        # 2. Trening modelu
         model = YOLO(str(stage4_weight), task="detect")
 
         model.train(
@@ -527,7 +489,7 @@ class LeavesFineTuningPipeline:
             best_trained = cands[0] if cands else None
 
         if not best_trained or not best_trained.is_file():
-            raise FileNotFoundError(f"Nie znaleziono pliku wag best.pt w: {self.stage5_dir}")
+            raise FileNotFoundError(f"best.pt weights not found in: {self.stage5_dir}")
 
         best_pt = self.stage5_dir / "best.pt"
         best_pth = self.stage5_dir / "best.pth"
@@ -543,9 +505,9 @@ class LeavesFineTuningPipeline:
         except Exception:
             shutil.copy2(best_trained, best_pth)
 
-        print(f"\n[Stage 5] Zapisano finalny model: {best_pt} oraz {last_pt}")
+        print(f"\n[Stage 5] Saved final model: {best_pt} and {last_pt}")
 
-        # Ewaluacja na standardowym zbiorze walidacyjnym (weryfikacja czy model rozpoznaje starca w naturze)
+        # Evaluate on standard validation set (verify wild ragwort recognition)
         metrics = evaluate_checkpoint(
             model_weight=best_pt,
             data_yaml=self.data_yaml,
@@ -561,7 +523,7 @@ class LeavesFineTuningPipeline:
         return best_pt
 
     def save_comparison_summary(self):
-        """Zapisuje raport końcowy Stage 2 -> Stage 3 -> Stage 4 -> Stage 5."""
+        """Save final comparison summary across Stages 2, 3, 4, and 5."""
         summary_dir = self.output_dir / "leaves_summary"
         summary_dir.mkdir(parents=True, exist_ok=True)
 
@@ -585,11 +547,10 @@ class LeavesFineTuningPipeline:
                 )
         csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
 
-        # Tabela tekstowa
         header = "=" * 86 + "\n"
-        title = "       PODSUMOWANIE ETAPÓW LIŚCI: STAGE 2 -> STAGE 3 -> STAGE 4 -> STAGE 5\n"
+        title = "       LEAF STAGES SUMMARY: STAGE 2 -> STAGE 3 -> STAGE 4 -> STAGE 5\n"
         sep = "-" * 86 + "\n"
-        col_names = f"{'Etap':<18} | {'mAP@50':<10} | {'mAP@50-95':<12} | {'Precyzja':<10} | {'Czułość':<10} | {'Fitness':<10}\n"
+        col_names = f"{'Stage':<18} | {'mAP@50':<10} | {'mAP@50-95':<12} | {'Precision':<10} | {'Recall':<10} | {'Fitness':<10}\n"
 
         labels_map = {
             "stage2": "Stage 2 (Base)",
@@ -617,17 +578,17 @@ class LeavesFineTuningPipeline:
         txt_path.write_text(report_txt, encoding="utf-8")
 
         print("\n" + report_txt)
-        print(f"[Podsumowanie] Zapisano w:")
+        print(f"[Summary] Saved to:")
         print(f"  - {json_path}")
         print(f"  - {csv_path}")
         print(f"  - {txt_path}")
 
     def _print_metrics_block(self, title: str, metrics: Dict[str, float]):
-        print(f"\n--- WYNIKI WALIDACJI: {title} ---")
+        print(f"\n--- VALIDATION RESULTS: {title} ---")
         print(f"  mAP@50               : {metrics.get('mAP50', 0.0):.4f}")
         print(f"  mAP@50-95            : {metrics.get('mAP50-95', 0.0):.4f}")
-        print(f"  Precyzja (Precision) : {metrics.get('precision', 0.0):.4f}")
-        print(f"  Czułość (Recall)     : {metrics.get('recall', 0.0):.4f}")
+        print(f"  Precision            : {metrics.get('precision', 0.0):.4f}")
+        print(f"  Recall               : {metrics.get('recall', 0.0):.4f}")
         print(f"  Fitness              : {metrics.get('fitness', 0.0):.4f}")
         print("---------------------------------------")
 
@@ -652,7 +613,7 @@ def run_leaves_fine_tuning(
     stage4_checkpoint: Optional[Union[str, Path]] = None,
     val_only: bool = False,
 ):
-    """Główna funkcja wykonawcza potoku Stage 3 -> Stage 4 -> Stage 5."""
+    """Main execution function for the leaf fine-tuning pipeline (Stages 3 -> 4 -> 5)."""
     resolved_model = resolve_model_path(stage2_model_path or STAGE2_DEFAULT_MODEL)
     inspect_model_architecture(resolved_model)
 
@@ -666,16 +627,14 @@ def run_leaves_fine_tuning(
         workers=workers,
     )
 
-    # 0. Ewaluacja wejściowego modelu Stage 2
     pipeline.evaluate_initial_stage2()
     if val_only:
-        print("[Info] Uruchomiono w trybie --val-only. Zakończono.")
+        print("[Info] Ran in --val-only mode. Completed.")
         return pipeline.metrics_summary
 
-    # 1. Stage 3
     if skip_stage3:
         best_s3 = Path(stage3_checkpoint or (pipeline.stage3_dir / "best.pt")).resolve()
-        print(f"\n[Info] Pomijam trening Stage 3. Używam istniejącego: {best_s3}")
+        print(f"\n[Info] Skipping Stage 3 training. Using existing checkpoint: {best_s3}")
         m = evaluate_checkpoint(best_s3, pipeline.data_yaml, device=pipeline.device, imgsz=imgsz, batch=batch)
         pipeline.metrics_summary["stage3"] = {"checkpoint": str(best_s3), "metrics": m}
     else:
@@ -684,10 +643,9 @@ def run_leaves_fine_tuning(
             lr0=lr0_stage3,
         )
 
-    # 2. Stage 4
     if skip_stage4:
         best_s4 = Path(stage4_checkpoint or (pipeline.stage4_dir / "best.pt")).resolve()
-        print(f"\n[Info] Pomijam trening Stage 4. Używam istniejącego: {best_s4}")
+        print(f"\n[Info] Skipping Stage 4 training. Using existing checkpoint: {best_s4}")
         m = evaluate_checkpoint(best_s4, pipeline.data_yaml, device=pipeline.device, imgsz=imgsz, batch=batch)
         pipeline.metrics_summary["stage4"] = {"checkpoint": str(best_s4), "metrics": m}
     else:
@@ -697,127 +655,125 @@ def run_leaves_fine_tuning(
             lr0=lr0_stage4,
         )
 
-    # 3. Stage 5
     pipeline.run_stage5(
         stage4_weight=best_s4,
         epochs=stage5_epochs,
         lr0=lr0_stage5,
     )
 
-    # 4. Podsumowanie
     pipeline.save_comparison_summary()
     return pipeline.metrics_summary
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Fine-tuning modeli Ragwort ukierunkowany na cechy liści (Stage 3 -> 4 -> 5).",
+        description="Ragwort fine-tuning focused on leaf and structural features (Stage 3 -> 4 -> 5).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--model",
         type=str,
         default=str(STAGE2_DEFAULT_MODEL),
-        help="Ścieżka do najlepszego checkpointu z etapu 2",
+        help="Path to best Stage 2 checkpoint",
     )
     parser.add_argument(
         "--data-yaml",
         type=Path,
         default=DATASETS_DIR / "stage2_data.yaml",
-        help="Plik konfiguracji danych z poprzedniego etapu",
+        help="Dataset YAML configuration from previous stage",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=FINE_RESULTS_DIR,
-        help="Główny katalog zapisu wyników",
+        help="Main directory to store fine-tuning results",
     )
     parser.add_argument(
         "--stage3-epochs",
         type=int,
         default=8,
-        help="Liczba epok dla etapu 3 (rozdzielczość 1024)",
+        help="Number of epochs for Stage 3 (1024 resolution)",
     )
     parser.add_argument(
         "--stage4-epochs",
         type=int,
         default=8,
-        help="Liczba epok dla etapu 4 (augmentacje liści)",
+        help="Number of epochs for Stage 4 (leaf augmentations)",
     )
     parser.add_argument(
         "--stage5-epochs",
         type=int,
         default=8,
-        help="Liczba epok dla etapu 5 (dane bez koloru żółtego)",
+        help="Number of epochs for Stage 5 (no-yellow flower images)",
     )
     parser.add_argument(
         "--lr0-stage3",
         type=float,
         default=0.0005,
-        help="Learning rate dla etapu 3",
+        help="Learning rate for Stage 3",
     )
     parser.add_argument(
         "--lr0-stage4",
         type=float,
         default=0.0003,
-        help="Learning rate dla etapu 4",
+        help="Learning rate for Stage 4",
     )
     parser.add_argument(
         "--lr0-stage5",
         type=float,
         default=0.0003,
-        help="Learning rate dla etapu 5",
+        help="Learning rate for Stage 5",
     )
     parser.add_argument(
         "--imgsz",
         type=int,
         default=1024,
-        help="Rozdzielczość obrazu dla etapów 3, 4 i 5",
+        help="Image resolution for stages 3, 4, and 5",
     )
     parser.add_argument(
         "--batch",
         type=int,
         default=8,
-        help="Rozmiar batcha (bezpieczny dla 6GB VRAM przy 1024)",
+        help="Batch size (safe for 6GB VRAM at 1024 resolution)",
     )
     parser.add_argument(
         "--device",
         type=str,
         default=None,
-        help="Urządzenie obliczeniowe ('cuda:0', 'cpu')",
+        help="Computation device ('cuda:0', 'cpu')",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=4,
-        help="Liczba procesów roboczych DataLoader",
+        help="DataLoader worker processes",
     )
     parser.add_argument(
         "--skip-stage3",
         action="store_true",
-        help="Pomiń etap 3 i przejdź do etapu 4",
+        help="Skip Stage 3 and proceed to Stage 4",
     )
     parser.add_argument(
         "--skip-stage4",
         action="store_true",
-        help="Pomiń etap 4 i przejdź do etapu 5",
+        help="Skip Stage 4 and proceed to Stage 5",
     )
     parser.add_argument(
         "--stage3-checkpoint",
         type=str,
         default=None,
-        help="Ścieżka do checkpointu etapu 3 w przypadku pominięcia",
+        help="Path to Stage 3 checkpoint when skipped",
     )
     parser.add_argument(
         "--stage4-checkpoint",
         type=str,
         default=None,
-        help="Ścieżka do checkpointu etapu 4 w przypadku pominięcia",
+        help="Path to Stage 4 checkpoint when skipped",
     )
     parser.add_argument(
         "--val-only",
         action="store_true",
-        help="Tylko ewaluacja bez uruchamiania treningu",
+        help="Run validation only without training",
     )
 
     return parser.parse_args()

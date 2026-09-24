@@ -1,27 +1,19 @@
 """
-fine_tuning.py
-
-Dwuetapowe doszkolenie (fine-tuning) modelu detekcji starca (RagwortDetection):
-  1. Stage 1 — Realne dane:
-     - Użycie wyłącznie danych rzeczywistych z data/facility (negatywy z pustymi .txt)
-       oraz data/data_concatenated/Felix (pozytywne adnotacje ragwort).
-     - Niska wartość learning rate (np. 0.001 z AdamW).
-     - Trening przez ~10 epok.
-     - Zapis wag i wyników do outputs/fine_labeling_results/stage1.
-
-  2. Stage 2 — Weighted real data:
-     - Start od najlepszego modelu z etapu 1.
-     - Włączenie ograniczonej puli danych syntetycznych (np. 200-300 próbek).
-     - Silne zwagowanie/oversampling około 200 dobrych zdjęć Felixa (~12-15x),
-       aby dominowały gradienty w każdej epoce (~75-85% udziału).
-     - Kolejne 5-10 epok z niskim learning rate (np. 0.0005).
-     - Zapis wag i wyników do outputs/fine_labeling_results/stage2.
-
-Skrypt automatycznie:
-  - Analizuje architekturę bazowego modelu best.pth / best.pt (YOLO / DEIM).
-  - Przygotowuje manifesty i konfiguracje bez modyfikacji oryginalnych plików danych.
-  - Ewaluuje model bazowy, model po etapie 1 i po etapie 2 na wspólnym zbiorze walidacyjnym.
-  - Zapisuje metryki porównawcze (JSON, CSV, raport tekstowy) do outputs/fine_labeling_results/.
+File: src/fine_tuning/fine_tuning.py
+Usage:
+    python src/fine_tuning/fine_tuning.py --model outputs/best_model/best.pth --stage1-epochs 10 --stage2-epochs 10
+    # To run validation only:
+    python src/fine_tuning/fine_tuning.py --model outputs/best_model/best.pth --val-only
+Description:
+    Two-stage fine-tuning pipeline for ragwort detection:
+      1. Stage 1 — Pure real data:
+         Uses real images from data/facility (negatives with empty .txt labels)
+         and data/data_concatenated/Felix (positive ragwort annotations) with AdamW.
+      2. Stage 2 — Weighted real data:
+         Starts from Stage 1 best checkpoint, adds a small pool of synthetic samples,
+         and applies heavy oversampling (~12x) to Felix images so real features dominate gradients.
+    Evaluates baseline, stage 1, and stage 2 checkpoints on a common validation set
+    and saves metric comparison reports (JSON, CSV, summary).
 """
 
 from __future__ import annotations
@@ -38,12 +30,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
 import yaml
 
-# Dodanie katalogu głównego projektu do sys.path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Konfiguracja katalogów wyjściowych Ultralytics
 DEFAULT_OUTPUTS_DIR = REPO_ROOT / "outputs"
 FINE_RESULTS_DIR = DEFAULT_OUTPUTS_DIR / "fine_labeling_results"
 DEFAULT_DATASETS_DIR = FINE_RESULTS_DIR / "datasets"
@@ -64,8 +54,8 @@ VALID_IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 def resolve_model_path(path_str: Optional[Union[str, Path]] = None) -> Path:
     """
-    Wyszukuje i normalizuje ścieżkę do wag modelu bazowego (best.pth lub best.pt).
-    Zapewnia automatyczne dopasowanie rozszerzenia .pth <-> .pt.
+    Find and normalize the path to baseline model weights (best.pth or best.pt).
+    Automatically checks both .pth and .pt file extensions.
     """
     if path_str:
         p = Path(path_str)
@@ -90,26 +80,24 @@ def resolve_model_path(path_str: Optional[Union[str, Path]] = None) -> Path:
     for cand in candidates:
         if cand.is_file():
             return cand.resolve()
-        # Sprawdź zamianę rozszerzenia .pth <-> .pt
         alt_cand = cand.with_suffix(".pt") if cand.suffix.lower() == ".pth" else cand.with_suffix(".pth")
         if alt_cand.is_file():
             return alt_cand.resolve()
 
     raise FileNotFoundError(
-        f"Nie znaleziono wag modelu bazowego. Przeszukane lokalizacje: {[str(c) for c in candidates]}"
+        f"Baseline model weights not found. Searched locations: {[str(c) for c in candidates]}"
     )
 
 
 def inspect_model_architecture(model_path: Path) -> Dict[str, Any]:
     """
-    Analizuje strukturę pliku wag (state dict / checkpoint) bez założeń wstępnych,
-    rozpoznając architekturę (YOLOv8 Ultralytics vs DEIM vs inna).
+    Inspect checkpoint weights structure to determine architecture (Ultralytics YOLO vs DEIM vs other).
     """
-    print(f"\n[Analiza] Sprawdzanie architektury modelu w pliku: {model_path}")
+    print(f"\n[Inspect] Inspecting model architecture in: {model_path}")
     try:
         data = torch.load(model_path, map_location="cpu", weights_only=False)
     except Exception as e:
-        raise RuntimeError(f"Błąd ładowania pliku wag {model_path}: {e}")
+        raise RuntimeError(f"Error loading weights file {model_path}: {e}")
 
     arch_info: Dict[str, Any] = {
         "framework": "unknown",
@@ -120,7 +108,6 @@ def inspect_model_architecture(model_path: Path) -> Dict[str, Any]:
 
     if isinstance(data, dict):
         if "model" in data and hasattr(data["model"], "yaml"):
-            # Ultralytics YOLO model
             arch_info["framework"] = "ultralytics_yolo"
             m = data["model"]
             arch_info["model_type"] = type(m).__name__
@@ -128,38 +115,35 @@ def inspect_model_architecture(model_path: Path) -> Dict[str, Any]:
                 arch_info["classes"] = m.names
             if "train_args" in data and isinstance(data["train_args"], dict):
                 arch_info["imgsz"] = data["train_args"].get("imgsz", 640)
-            print(f"[Analiza] Rozpoznano model Ultralytics YOLO: {arch_info['model_type']}")
-            print(f"[Analiza] Klasy modelu: {arch_info['classes']}, imgsz: {arch_info['imgsz']}")
+            print(f"[Inspect] Recognized Ultralytics YOLO model: {arch_info['model_type']}")
+            print(f"[Inspect] Model classes: {arch_info['classes']}, imgsz: {arch_info['imgsz']}")
             return arch_info
 
         elif "model_state_dict" in data and "config" in data:
-            # Model DEIM / DINOv3
             arch_info["framework"] = "deim"
             arch_info["model_type"] = "DEIMModel"
             cfg = data.get("config", {})
             arch_info["classes"] = {c.get("id", 1): c.get("name", "ragwort") for c in data.get("categories", [])}
-            print(f"[Analiza] Rozpoznano model DEIM / DINOv3: {arch_info['model_type']}")
+            print(f"[Inspect] Recognized DEIM / DINOv3 model: {arch_info['model_type']}")
             return arch_info
 
-    # Domyślny fallback: próba przez Ultralytics YOLO
     arch_info["framework"] = "ultralytics_yolo"
     arch_info["model_type"] = "YOLO_fallback"
-    print(f"[Analiza] Fallback do frameworka Ultralytics YOLO dla: {model_path.name}")
+    print(f"[Inspect] Fallback to Ultralytics YOLO framework for: {model_path.name}")
     return arch_info
 
 
 def discover_facility_images(facility_dir: Path) -> List[Tuple[Path, Path]]:
     """
-    Znajduje zdjęcia z data/facility oraz odpowiadające im puste pliki etykiet .txt (negatywy).
-    Zwraca listę krotek (ścieżka_obrazu, ścieżka_etykiety).
+    Find images in facility directory and match them with empty negative label files.
+    Returns a list of (image_path, label_path) tuples.
     """
     if not facility_dir.exists():
-        raise FileNotFoundError(f"Katalog data/facility nie istnieje: {facility_dir}")
+        raise FileNotFoundError(f"Directory data/facility does not exist: {facility_dir}")
 
     samples: List[Tuple[Path, Path]] = []
     for p in sorted(facility_dir.iterdir()):
         if p.is_file() and p.suffix.lower() in VALID_IMG_EXTS:
-            # Szukamy etykiety .txt w tym samym folderze lub w labels/
             lbl_candidates = [
                 facility_dir / f"{p.stem}.txt",
                 facility_dir / "labels" / f"{p.stem}.txt",
@@ -171,27 +155,24 @@ def discover_facility_images(facility_dir: Path) -> List[Tuple[Path, Path]]:
                     break
 
             if lbl_path is None:
-                # Jeśli plik etykiety nie istnieje, wskazujemy domyślną ścieżkę .txt w tym samym folderze
                 lbl_path = facility_dir / f"{p.stem}.txt"
 
             samples.append((p.resolve(), lbl_path.resolve()))
 
-    print(f"[Zbiory] data/facility: znaleziono {len(samples)} zdjęć negatywnych (puste etykiety .txt)")
+    print(f"[Datasets] data/facility: found {len(samples)} negative images (empty .txt labels)")
     return samples
 
 
 def discover_felix_images(felix_dir: Path) -> List[Tuple[Path, Path]]:
     """
-    Znajduje dobre zdjęcia z data/data_concatenated/Felix (lub Felix_data)
-    oraz dopasowane etykiety YOLO .txt.
+    Find high-quality annotated images in Felix dataset directory and match them with YOLO .txt labels.
     """
     if not felix_dir.exists():
-        # Fallback do Felix_data jeśli Felix nie istnieje
         alt = felix_dir.parent / "Felix_data"
         if alt.exists():
             felix_dir = alt
         else:
-            raise FileNotFoundError(f"Katalog Felix nie istnieje: {felix_dir}")
+            raise FileNotFoundError(f"Felix directory does not exist: {felix_dir}")
 
     image_paths: List[Path] = []
     for p in felix_dir.rglob("*"):
@@ -200,7 +181,6 @@ def discover_felix_images(felix_dir: Path) -> List[Tuple[Path, Path]]:
 
     samples: List[Tuple[Path, Path]] = []
     for img in sorted(image_paths):
-        # Sprawdzamy możliwe lokalizacje etykiety YOLO
         stem = img.stem
         parent = img.parent
         possible_lbls = [
@@ -220,7 +200,7 @@ def discover_felix_images(felix_dir: Path) -> List[Tuple[Path, Path]]:
 
         samples.append((img, lbl.resolve()))
 
-    print(f"[Zbiory] Felix ({felix_dir.name}): znaleziono {len(samples)} dobrych zdjęć z adnotacjami")
+    print(f"[Datasets] Felix ({felix_dir.name}): found {len(samples)} annotated images")
     return samples
 
 
@@ -229,7 +209,7 @@ def discover_synthetic_images(
     limit: int = 300,
 ) -> List[Tuple[Path, Path]]:
     """
-    Wyszukuje ograniczoną pulę zdjęć syntetycznych wraz z ich etykietami.
+    Find a limited pool of synthetic images and matching labels.
     """
     candidates = [
         synth_dir,
@@ -245,14 +225,13 @@ def discover_synthetic_images(
             break
 
     if chosen_dir is None:
-        print("[Zbiory] Ostrzeżenie: Nie znaleziono katalogu z danymi syntetycznymi. Pomijam syntetyki.")
+        print("[Datasets] Warning: Synthetic dataset directory not found. Skipping synthetic data.")
         return []
 
     image_paths = [p for p in chosen_dir.glob("*.jpg") if p.is_file()]
     if not image_paths:
         image_paths = [p for p in chosen_dir.rglob("*") if p.is_file() and p.suffix.lower() in VALID_IMG_EXTS]
 
-    # Deterministic shuffle
     rnd = random.Random(42)
     rnd.shuffle(image_paths)
     selected = image_paths[:limit]
@@ -260,7 +239,6 @@ def discover_synthetic_images(
     samples: List[Tuple[Path, Path]] = []
     for img in selected:
         stem = img.stem
-        # YOLO labels location
         cand_lbls = [
             img.parent.parent / "labels" / f"{stem}.txt",
             img.parent / f"{stem}.txt",
@@ -274,7 +252,7 @@ def discover_synthetic_images(
             lbl = img.parent.parent / "labels" / f"{stem}.txt"
         samples.append((img.resolve(), lbl.resolve()))
 
-    print(f"[Zbiory] Dane syntetyczne ({chosen_dir.name}): wybrano {len(samples)} zdjęć (limit: {limit})")
+    print(f"[Datasets] Synthetic data ({chosen_dir.name}): selected {len(samples)} images (limit: {limit})")
     return samples
 
 
@@ -283,10 +261,10 @@ def discover_validation_images(
     val_facility: List[Tuple[Path, Path]],
 ) -> List[Path]:
     """
-    Łączy próbkę walidacyjną:
-      - wydzielone zdjęcia Felix (pozytywy),
-      - wydzielone zdjęcia facility (negatywy),
-      - oraz zdjęcia z istniejącego zbioru testowego combined_dataset.
+    Combine validation images:
+      - Split Felix positive images,
+      - Split facility negative images,
+      - Plus test images from existing combined_dataset test split.
     """
     val_paths: List[Path] = [p for p, _ in val_felix] + [p for p, _ in val_facility]
 
@@ -316,21 +294,19 @@ def prepare_fine_tuning_datasets(
     seed: int = 42,
 ) -> Dict[str, Path]:
     """
-    Automatycznie przygotowuje manifesty i konfiguracje YAML dla obu etapów.
-    Zapewnia pełną bezinwazyjność (brak modyfikacji plików źródłowych).
+    Prepare manifests and YAML configurations for Stage 1 and Stage 2 fine-tuning.
+    Non-destructive: original dataset files are preserved.
     """
     output_datasets_dir.mkdir(parents=True, exist_ok=True)
     rnd = random.Random(seed)
 
     print("\n" + "=" * 78)
-    print(" PRZYGOTOWANIE DATASETÓW DO FINE-TUNINGU (BEZINWAZYJNE)")
+    print(" PREPARING FINE-TUNING DATASETS (NON-DESTRUCTIVE)")
     print("=" * 78)
 
-    # 1. Pozyskanie zdjęć realnych
     facility_samples = discover_facility_images(facility_dir)
     felix_samples = discover_felix_images(felix_dir)
 
-    # 2. Wydzielenie części walidacyjnej z danych realnych
     rnd.shuffle(facility_samples)
     rnd.shuffle(felix_samples)
 
@@ -342,22 +318,17 @@ def prepare_fine_tuning_datasets(
     val_facility = facility_samples[:n_val_facility]
     train_facility = facility_samples[n_val_facility:]
 
-    # 3. Zbiór walidacyjny wspólny dla obu etapów i baseline'u
     val_images = discover_validation_images(val_felix, val_facility)
-
-    # 4. Dane syntetyczne dla etapu 2
     synth_samples = discover_synthetic_images(synth_dir, limit=synth_limit_stage2)
 
-    # 5. Generowanie manifestów YOLO (.txt)
     def to_line(p: Path) -> str:
-        # Zapisujemy ścieżki relatywne względem REPO_ROOT
         try:
             rel = p.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
             return rel
         except ValueError:
             return str(p.resolve())
 
-    # --- Manifest Stage 1: czyste dane realne (Felix + Facility) ---
+    # Stage 1 manifest: pure real data (Felix + Facility)
     stage1_lines: List[str] = []
     for img, _ in train_felix:
         stage1_lines.append(to_line(img))
@@ -365,30 +336,25 @@ def prepare_fine_tuning_datasets(
         stage1_lines.append(to_line(img))
     rnd.shuffle(stage1_lines)
 
-    # --- Manifest Stage 2: weighted real data + ograniczony syntetyk ---
+    # Stage 2 manifest: weighted real data + limited synthetic samples
     stage2_lines: List[str] = []
-    # Zwagowane próbkowanie zdjęć Felixa
     for img, _ in train_felix:
         line = to_line(img)
         for _ in range(felix_weight_stage2):
             stage2_lines.append(line)
 
-    # Zdjęcia facility (negatywy)
     for img, _ in train_facility:
         line = to_line(img)
         for _ in range(facility_weight_stage2):
             stage2_lines.append(line)
 
-    # Ograniczony udział danych syntetycznych
     for img, _ in synth_samples:
         stage2_lines.append(to_line(img))
 
     rnd.shuffle(stage2_lines)
 
-    # --- Manifest Walidacji ---
     val_lines = [to_line(p) for p in val_images]
 
-    # Zapis plików manifestów
     stage1_txt = output_datasets_dir / "stage1_train.txt"
     stage2_txt = output_datasets_dir / "stage2_train.txt"
     val_txt = output_datasets_dir / "val.txt"
@@ -397,7 +363,6 @@ def prepare_fine_tuning_datasets(
     stage2_txt.write_text("\n".join(stage2_lines) + "\n", encoding="utf-8")
     val_txt.write_text("\n".join(val_lines) + "\n", encoding="utf-8")
 
-    # Zapis plików konfiguracji data.yaml dla YOLO
     base_data_cfg = {
         "path": str(REPO_ROOT.resolve()),
         "val": str(val_txt.relative_to(REPO_ROOT).as_posix()),
@@ -418,7 +383,6 @@ def prepare_fine_tuning_datasets(
     with open(stage2_yaml, "w", encoding="utf-8") as f:
         yaml.dump(cfg_s2, f, sort_keys=False, allow_unicode=True)
 
-    # Statystyki i proporcje
     n_s2_felix = len(train_felix) * felix_weight_stage2
     n_s2_facility = len(train_facility) * facility_weight_stage2
     n_s2_synth = len(synth_samples)
@@ -426,22 +390,22 @@ def prepare_fine_tuning_datasets(
     pct_felix_s2 = (n_s2_felix / total_s2 * 100) if total_s2 > 0 else 0
     pct_synth_s2 = (n_s2_synth / total_s2 * 100) if total_s2 > 0 else 0
 
-    print(f"\n[Konfiguracja Stage 1 - Realne Dane]")
-    print(f"  - Pozytywne (Felix):        {len(train_felix)} zdjęć")
-    print(f"  - Negatywne (Facility):     {len(train_facility)} zdjęć")
-    print(f"  - Łącznie w epoce:          {len(stage1_lines)} kroków")
-    print(f"  - Plik konfiguracji:        {stage1_yaml}")
+    print(f"\n[Stage 1 Config - Real Data]")
+    print(f"  - Positive (Felix):         {len(train_felix)} images")
+    print(f"  - Negative (Facility):      {len(train_facility)} images")
+    print(f"  - Total steps per epoch:    {len(stage1_lines)}")
+    print(f"  - Config file:              {stage1_yaml}")
 
-    print(f"\n[Konfiguracja Stage 2 - Weighted Real Data]")
-    print(f"  - Pozytywne (Felix {felix_weight_stage2}x):   {len(train_felix)} unikalnych -> {n_s2_felix} próbek ({pct_felix_s2:.1f}% udziału)")
-    print(f"  - Negatywne (Facility {facility_weight_stage2}x): {len(train_facility)} unikalnych -> {n_s2_facility} próbek")
-    print(f"  - Syntetyczne (1x):         {n_s2_synth} próbek ({pct_synth_s2:.1f}% udziału)")
-    print(f"  - Łącznie w epoce:          {total_s2} kroków")
-    print(f"  - Plik konfiguracji:        {stage2_yaml}")
+    print(f"\n[Stage 2 Config - Weighted Real Data]")
+    print(f"  - Positive (Felix {felix_weight_stage2}x):   {len(train_felix)} unique -> {n_s2_felix} samples ({pct_felix_s2:.1f}% gradient share)")
+    print(f"  - Negative (Facility {facility_weight_stage2}x): {len(train_facility)} unique -> {n_s2_facility} samples")
+    print(f"  - Synthetic (1x):           {n_s2_synth} samples ({pct_synth_s2:.1f}% share)")
+    print(f"  - Total steps per epoch:    {total_s2}")
+    print(f"  - Config file:              {stage2_yaml}")
 
-    print(f"\n[Zbiór Walidacyjny]")
-    print(f"  - Liczba próbek testowych:  {len(val_lines)} zdjęć")
-    print(f"  - Manifest walidacji:       {val_txt}")
+    print(f"\n[Validation Set]")
+    print(f"  - Number of test samples:   {len(val_lines)} images")
+    print(f"  - Validation manifest:      {val_txt}")
     print("=" * 78)
 
     return {
@@ -461,15 +425,15 @@ def evaluate_checkpoint(
     batch: int = 16,
 ) -> Dict[str, float]:
     """
-    Przeprowadza walidację zadanego checkpointu i zwraca ujednolicony słownik metryk.
+    Validate a given checkpoint and return standard detection metrics.
     """
     from ultralytics import YOLO
 
     weight_p = Path(model_weight)
     if not weight_p.is_file():
-        raise FileNotFoundError(f"Nie znaleziono pliku wag do ewaluacji: {weight_p}")
+        raise FileNotFoundError(f"Checkpoint weights not found: {weight_p}")
 
-    print(f"[Walidacja] Ładowanie wag: {weight_p.name} na {device}...")
+    print(f"[Validation] Loading checkpoint: {weight_p.name} on {device}...")
     model = YOLO(str(weight_p), task="detect")
     res = model.val(
         data=str(data_yaml),
@@ -492,7 +456,7 @@ def evaluate_checkpoint(
 
 class FineTuningPipeline:
     """
-    Dwustopniowy potok doszkalania modelu:
+    Two-stage model fine-tuning pipeline:
       Baseline -> Stage 1 (Real) -> Stage 2 (Weighted Real).
     """
 
@@ -529,7 +493,7 @@ class FineTuningPipeline:
         felix_weight_stage2: int = 12,
         synth_limit_stage2: int = 250,
     ) -> Dict[str, Path]:
-        """Przygotowuje datasety do Stage 1 i Stage 2."""
+        """Prepare datasets for Stage 1 and Stage 2."""
         return prepare_fine_tuning_datasets(
             facility_dir=self.facility_dir,
             felix_dir=self.felix_dir,
@@ -540,9 +504,9 @@ class FineTuningPipeline:
         )
 
     def evaluate_baseline(self, val_yaml: Path) -> Dict[str, float]:
-        """Ocenia model bazowy (baseline) przed fine-tuningiem."""
+        """Evaluate baseline model before fine-tuning."""
         print("\n" + "=" * 78)
-        print(" 1. EWALUACJA MODELU BAZOWEGO (BASELINE)")
+        print(" 1. BASELINE MODEL EVALUATION")
         print(f" Checkpoint: {self.baseline_path}")
         print("=" * 78)
 
@@ -570,18 +534,18 @@ class FineTuningPipeline:
         optimizer: str = "AdamW",
     ) -> Path:
         """
-        Etap 1: Doszkalanie na czystych danych rzeczywistych (facility + felix).
+        Stage 1: Fine-tuning on pure real data (facility + felix).
         """
         from ultralytics import YOLO
 
         print("\n" + "=" * 78)
-        print(" 2. FINE-TUNING ETAP 1 — REALNE DANE")
-        print(f" Model startowy:   {self.baseline_path}")
-        print(f" Epoki:            {epochs}")
-        print(f" Learning Rate:    lr0={lr0}, lrf={lrf}")
-        print(f" Optymalizator:    {optimizer}")
-        print(f" Dane:             {data_yaml}")
-        print(f" Katalog wyjścia:  {self.stage1_dir}")
+        print(" 2. FINE-TUNING STAGE 1 — REAL DATA")
+        print(f" Starting model:  {self.baseline_path}")
+        print(f" Epochs:          {epochs}")
+        print(f" Learning rate:   lr0={lr0}, lrf={lrf}")
+        print(f" Optimizer:       {optimizer}")
+        print(f" Data:            {data_yaml}")
+        print(f" Output dir:      {self.stage1_dir}")
         print("=" * 78)
 
         self.stage1_dir.mkdir(parents=True, exist_ok=True)
@@ -606,14 +570,12 @@ class FineTuningPipeline:
 
         best_trained = self.stage1_dir / "run" / "weights" / "best.pt"
         if not best_trained.is_file():
-            # Fallback jeśli Ultralytics zapisał w podkatalogu weights bezpośrednio
             candidates = list(self.stage1_dir.rglob("best.pt"))
             if candidates:
                 best_trained = candidates[0]
             else:
-                raise FileNotFoundError(f"Nie znaleziono pliku best.pt po treningu Stage 1 w: {self.stage1_dir}")
+                raise FileNotFoundError(f"best.pt not found after Stage 1 training in: {self.stage1_dir}")
 
-        # Zapisz czytelne kopie best.pt oraz best.pth w głównym folderze stage1
         stage1_best_pt = self.stage1_dir / "best.pt"
         stage1_best_pth = self.stage1_dir / "best.pth"
         shutil.copy2(best_trained, stage1_best_pt)
@@ -624,9 +586,8 @@ class FineTuningPipeline:
         except Exception:
             shutil.copy2(best_trained, stage1_best_pth)
 
-        print(f"\n[Stage 1] Zapisano najlepszy model: {stage1_best_pt} oraz {stage1_best_pth}")
+        print(f"\n[Stage 1] Best model saved: {stage1_best_pt} and {stage1_best_pth}")
 
-        # Ewaluacja checkpointu Stage 1
         metrics = evaluate_checkpoint(
             model_weight=stage1_best_pt,
             data_yaml=data_yaml,
@@ -651,18 +612,18 @@ class FineTuningPipeline:
         optimizer: str = "AdamW",
     ) -> Path:
         """
-        Etap 2: Doszkalanie ze zwagowanymi danymi Felixa i ograniczonym udziałem syntetyków.
+        Stage 2: Fine-tuning with weighted Felix data and limited synthetic data.
         """
         from ultralytics import YOLO
 
         print("\n" + "=" * 78)
-        print(" 3. FINE-TUNING ETAP 2 — WEIGHTED REAL DATA")
-        print(f" Model startowy:   {stage1_weight}")
-        print(f" Epoki:            {epochs}")
-        print(f" Learning Rate:    lr0={lr0}, lrf={lrf}")
-        print(f" Optymalizator:    {optimizer}")
-        print(f" Dane:             {data_yaml}")
-        print(f" Katalog wyjścia:  {self.stage2_dir}")
+        print(" 3. FINE-TUNING STAGE 2 — WEIGHTED REAL DATA")
+        print(f" Starting model:  {stage1_weight}")
+        print(f" Epochs:          {epochs}")
+        print(f" Learning rate:   lr0={lr0}, lrf={lrf}")
+        print(f" Optimizer:       {optimizer}")
+        print(f" Data:            {data_yaml}")
+        print(f" Output dir:      {self.stage2_dir}")
         print("=" * 78)
 
         self.stage2_dir.mkdir(parents=True, exist_ok=True)
@@ -691,7 +652,7 @@ class FineTuningPipeline:
             if candidates:
                 best_trained = candidates[0]
             else:
-                raise FileNotFoundError(f"Nie znaleziono pliku best.pt po treningu Stage 2 w: {self.stage2_dir}")
+                raise FileNotFoundError(f"best.pt not found after Stage 2 training in: {self.stage2_dir}")
 
         stage2_best_pt = self.stage2_dir / "best.pt"
         stage2_best_pth = self.stage2_dir / "best.pth"
@@ -703,9 +664,8 @@ class FineTuningPipeline:
         except Exception:
             shutil.copy2(best_trained, stage2_best_pth)
 
-        print(f"\n[Stage 2] Zapisano finalny model: {stage2_best_pt} oraz {stage2_best_pth}")
+        print(f"\n[Stage 2] Final model saved: {stage2_best_pt} and {stage2_best_pth}")
 
-        # Kopia do outputs/models/ dla łatwej integracji z resztą repozytorium
         try:
             models_dir = DEFAULT_OUTPUTS_DIR / "models"
             models_dir.mkdir(parents=True, exist_ok=True)
@@ -713,7 +673,6 @@ class FineTuningPipeline:
         except Exception:
             pass
 
-        # Ewaluacja checkpointu Stage 2
         metrics = evaluate_checkpoint(
             model_weight=stage2_best_pt,
             data_yaml=data_yaml,
@@ -729,7 +688,7 @@ class FineTuningPipeline:
         return stage2_best_pt
 
     def save_comparison_report(self):
-        """Generuje raporty porównawcze baseline -> stage1 -> stage2."""
+        """Generate comparison reports across baseline -> stage1 -> stage2."""
         json_path = self.output_dir / "metrics_comparison.json"
         csv_path = self.output_dir / "metrics_comparison.csv"
         txt_path = self.output_dir / "summary.txt"
@@ -737,7 +696,6 @@ class FineTuningPipeline:
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(self.metrics_summary, f, indent=2)
 
-        # Tworzenie pliku CSV
         csv_lines = ["stage,checkpoint,mAP50,mAP50-95,precision,recall,fitness"]
         for st_name in ["baseline", "stage1", "stage2"]:
             if st_name in self.metrics_summary:
@@ -750,11 +708,10 @@ class FineTuningPipeline:
                 )
         csv_path.write_text("\n".join(csv_lines) + "\n", encoding="utf-8")
 
-        # Tworzenie czytelnego raportu tekstowego i wydruku do konsoli
         header = "=" * 82 + "\n"
-        title = "             PORÓWNANIE METRYK: BASELINE -> STAGE 1 -> STAGE 2\n"
+        title = "             METRIC COMPARISON: BASELINE -> STAGE 1 -> STAGE 2\n"
         sep = "-" * 82 + "\n"
-        col_names = f"{'Etap':<12} | {'mAP@50':<10} | {'mAP@50-95':<12} | {'Precyzja':<10} | {'Czułość':<10} | {'Fitness':<10}\n"
+        col_names = f"{'Stage':<12} | {'mAP@50':<10} | {'mAP@50-95':<12} | {'Precision':<10} | {'Recall':<10} | {'Fitness':<10}\n"
 
         rows = []
         for st_name in ["baseline", "stage1", "stage2"]:
@@ -775,17 +732,17 @@ class FineTuningPipeline:
         txt_path.write_text(report_txt, encoding="utf-8")
 
         print("\n" + report_txt)
-        print(f"[Raport] Wyniki zapisano w:")
+        print(f"[Report] Results saved to:")
         print(f"  - JSON: {json_path}")
         print(f"  - CSV:  {csv_path}")
         print(f"  - TXT:  {txt_path}")
 
     def _print_metrics_block(self, title: str, metrics: Dict[str, float]):
-        print(f"\n--- WYNIKI WALIDACJI: {title} ---")
+        print(f"\n--- VALIDATION RESULTS: {title} ---")
         print(f"  mAP@50               : {metrics.get('mAP50', 0.0):.4f}")
         print(f"  mAP@50-95            : {metrics.get('mAP50-95', 0.0):.4f}")
-        print(f"  Precyzja (Precision) : {metrics.get('precision', 0.0):.4f}")
-        print(f"  Czułość (Recall)     : {metrics.get('recall', 0.0):.4f}")
+        print(f"  Precision            : {metrics.get('precision', 0.0):.4f}")
+        print(f"  Recall               : {metrics.get('recall', 0.0):.4f}")
         print(f"  Fitness              : {metrics.get('fitness', 0.0):.4f}")
         print("---------------------------------------")
 
@@ -810,12 +767,9 @@ def run_fine_tuning(
     stage1_checkpoint: Optional[Union[str, Path]] = None,
     val_only: bool = False,
 ):
-    """
-    Główna funkcja uruchamiająca cały dwuetapowy proces fine-tuningu.
-    """
-    # 1. Sprawdzenie ścieżki i analiza architektury modelu
+    """Main execution function for the two-stage fine-tuning process."""
     resolved_model = resolve_model_path(model_path)
-    arch_info = inspect_model_architecture(resolved_model)
+    inspect_model_architecture(resolved_model)
 
     pipeline = FineTuningPipeline(
         baseline_model_path=resolved_model,
@@ -829,27 +783,24 @@ def run_fine_tuning(
         workers=workers,
     )
 
-    # 2. Przygotowanie datasetów
     datasets = pipeline.prepare_data(
         felix_weight_stage2=felix_weight_stage2,
         synth_limit_stage2=synth_limit_stage2,
     )
 
-    # 3. Ewaluacja bazowa
     pipeline.evaluate_baseline(val_yaml=datasets["stage1_yaml"])
     if val_only:
-        print("[Info] Uruchomiono w trybie --val-only. Zakończono po ewaluacji bazowej.")
+        print("[Info] Ran in --val-only mode. Completed after baseline evaluation.")
         return pipeline.metrics_summary
 
-    # 4. Stage 1 — Realne dane
     if skip_stage1:
         if stage1_checkpoint and Path(stage1_checkpoint).is_file():
             best_s1 = Path(stage1_checkpoint).resolve()
         else:
             best_s1 = pipeline.stage1_dir / "best.pt"
             if not best_s1.is_file():
-                raise FileNotFoundError(f"Flaga --skip-stage1 aktywna, ale nie znaleziono wag w: {best_s1}")
-        print(f"\n[Info] Pomijam trening Stage 1. Używam istniejącego checkpointu: {best_s1}")
+                raise FileNotFoundError(f"--skip-stage1 active, but weights not found in: {best_s1}")
+        print(f"\n[Info] Skipping Stage 1 training. Using existing checkpoint: {best_s1}")
         metrics_s1 = evaluate_checkpoint(
             best_s1, datasets["stage1_yaml"], device=pipeline.device, imgsz=imgsz, batch=batch
         )
@@ -861,7 +812,6 @@ def run_fine_tuning(
             lr0=lr0_stage1,
         )
 
-    # 5. Stage 2 — Weighted real data
     best_s2 = pipeline.run_stage2(
         stage1_weight=best_s1,
         data_yaml=datasets["stage2_yaml"],
@@ -869,121 +819,120 @@ def run_fine_tuning(
         lr0=lr0_stage2,
     )
 
-    # 6. Raport porównawczy (Baseline -> Stage 1 -> Stage 2)
     pipeline.save_comparison_report()
     return pipeline.metrics_summary
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Dwuetapowe doszkalanie (fine-tuning) modelu detekcji starca (RagwortDetection).",
+        description="Two-stage fine-tuning pipeline for RagwortDetection.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--model",
         type=str,
         default="outputs/best_model/best.pth",
-        help="Ścieżka do wag modelu bazowego (np. best.pth lub best.pt)",
+        help="Path to baseline model weights (e.g. best.pth or best.pt)",
     )
     parser.add_argument(
         "--facility-dir",
         type=Path,
         default=REPO_ROOT / "data" / "facility",
-        help="Ścieżka do katalogu ze zdjęciami z obiektu (negatywy z pustymi .txt)",
+        help="Path to facility negative images directory",
     )
     parser.add_argument(
         "--felix-dir",
         type=Path,
         default=REPO_ROOT / "data" / "data_concatenated" / "Felix",
-        help="Ścieżka do dobrych zdjęć Felixa",
+        help="Path to Felix positive images directory",
     )
     parser.add_argument(
         "--synth-dir",
         type=Path,
         default=None,
-        help="Katalog ze zdjęciami syntetycznymi (domyślnie auto-wykrywanie)",
+        help="Path to synthetic images directory (default: auto-detect)",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=FINE_RESULTS_DIR,
-        help="Główny katalog wyników doszkalania",
+        help="Main output directory for fine-tuning results",
     )
     parser.add_argument(
         "--stage1-epochs",
         type=int,
         default=10,
-        help="Liczba epok dla etapu 1 (realne dane)",
+        help="Number of epochs for Stage 1 (real data)",
     )
     parser.add_argument(
         "--stage2-epochs",
         type=int,
         default=10,
-        help="Liczba epok dla etapu 2 (weighted real data)",
+        help="Number of epochs for Stage 2 (weighted real data)",
     )
     parser.add_argument(
         "--lr0-stage1",
         type=float,
         default=0.001,
-        help="Początkowy learning rate dla etapu 1",
+        help="Initial learning rate for Stage 1",
     )
     parser.add_argument(
         "--lr0-stage2",
         type=float,
         default=0.0005,
-        help="Początkowy learning rate dla etapu 2",
+        help="Initial learning rate for Stage 2",
     )
     parser.add_argument(
         "--felix-weight",
         type=int,
         default=12,
-        help="Współczynnik próbkowania/waga dla zdjęć Felixa w etapie 2",
+        help="Oversampling multiplier for Felix images in Stage 2",
     )
     parser.add_argument(
         "--synth-limit",
         type=int,
         default=250,
-        help="Maksymalna liczba zdjęć syntetycznych włączanych w etapie 2",
+        help="Maximum synthetic images included in Stage 2",
     )
     parser.add_argument(
         "--batch",
         type=int,
         default=16,
-        help="Rozmiar batcha treningowego",
+        help="Training batch size",
     )
     parser.add_argument(
         "--imgsz",
         type=int,
         default=640,
-        help="Rozdzielczość obrazu wejściowego",
+        help="Input image resolution",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=4,
-        help="Liczba procesów roboczych DataLoader",
+        help="DataLoader worker processes",
     )
     parser.add_argument(
         "--device",
         type=str,
         default=None,
-        help="Urządzenie obliczeniowe ('0', 'cuda:0', 'cpu')",
+        help="Computation device ('0', 'cuda:0', 'cpu')",
     )
     parser.add_argument(
         "--skip-stage1",
         action="store_true",
-        help="Pomiń trening etapu 1 i przejdź do etapu 2 z istniejącym checkpointem",
+        help="Skip Stage 1 and proceed to Stage 2 with existing checkpoint",
     )
     parser.add_argument(
         "--stage1-checkpoint",
         type=str,
         default=None,
-        help="Ścieżka do checkpointu etapu 1 (gdy używamy --skip-stage1)",
+        help="Path to Stage 1 checkpoint when using --skip-stage1",
     )
     parser.add_argument(
         "--val-only",
         action="store_true",
-        help="Wykonaj tylko ewaluację modelu bazowego bez przeprowadzania treningu",
+        help="Run baseline evaluation only without training",
     )
 
     return parser.parse_args()

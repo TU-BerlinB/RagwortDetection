@@ -1,14 +1,15 @@
 """
-yolov8.py
-
-Klasa wrapper dla modelu YOLOv8 w projekcie detekcji starca (RagwortDetection).
-Umożliwia:
-  - Inicjalizację modelu z wagami bazowymi (np. yolov8n.pt) lub własnym checkpointem (.pt)
-  - Trening modelu na zbiorze w formacie YOLO (np. data/combined_dataset/data.yaml)
-  - Predykcję na pojedynczych obrazach, batchach i katalogach
-  - Generowanie predykcji kompatybilnych z formatem ewaluacji w data_eval.py
-  - Walidację i wyliczanie metryk (mAP50, mAP50-95, precision, recall)
-  - Eksport do formatu ONNX / TorchScript
+File: src/models/yolov8.py
+Usage:
+    from src.models.yolov8 import YOLOv8
+    model = YOLOv8("yolov8s.pt")
+    results = model.predict("path/to/image.jpg")
+    # or run self-test:
+    python src/models/yolov8.py
+Description:
+    Wrapper for Ultralytics YOLOv8 object detection and segmentation,
+    supporting model initialization, training on YOLO format datasets,
+    batch prediction, metric validation, and model export.
 """
 
 from __future__ import annotations
@@ -23,12 +24,11 @@ import torch
 from PIL import Image
 from ultralytics import YOLO
 
-# Ścieżka bazowa projektu
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 DEFAULT_DATA_YAML = REPO_ROOT / "data" / "combined_dataset" / "data.yaml"
 
-# Konfiguracja katalogów Ultralytics, aby wagi i runy trafiały wyłącznie do outputs/
+# Configure Ultralytics settings so runs and weights are stored in outputs/
 try:
     from ultralytics import settings
     settings.update({
@@ -42,14 +42,12 @@ except Exception:
 
 class YOLOv8:
     """
-    Wrapper dla modelu detekcji YOLOv8.
+    Wrapper for YOLOv8 object detection and segmentation model.
 
-    Przykłady użycia:
+    Examples:
         >>> from src.models.yolov8 import YOLOv8
         >>> model = YOLOv8("yolov8s.pt")
-        >>> results = model.predict("sciezka/do/obrazu.jpg")
-        >>> # Trening na połączonym zbiorze:
-        >>> # model.train(data="data/combined_dataset/data.yaml", epochs=30)
+        >>> results = model.predict("path/to/image.jpg")
     """
 
     def __init__(
@@ -60,12 +58,11 @@ class YOLOv8:
     ):
         """
         Args:
-            model_weight: Nazwa bazowego modelu (np. 'yolov8s.pt', 'yolov8m.pt')
-                          lub ścieżka do wytrenowanego pliku wag .pt.
-            device: 'cuda', 'cpu' lub None (automatyczne wykrycie).
-            task: Zadanie modelu ('detect', 'segment', 'classify'). Domyślnie 'detect'.
+            model_weight: Name of the base model (e.g. 'yolov8s.pt') or path to a trained checkpoint.
+            device: 'cuda', 'cuda:0', 'cpu', or None for automatic detection.
+            task: Task type ('detect', 'segment', 'classify'). Defaults to 'detect'.
         """
-        # Normalizacja urzadzenia (PyTorch wymaga 'cuda:0' lub 'cuda', nie samo '0')
+        # Normalize device string for PyTorch
         if device is None:
             self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         elif str(device).isdigit():
@@ -75,7 +72,7 @@ class YOLOv8:
         else:
             self.device = str(device)
 
-        # Sprawdzenie gdzie znajduje się waga lub gdzie powinna zostać zapisana/pobrana
+        # Resolve model weights location
         mw = Path(model_weight)
         weights_dir = REPO_ROOT / "outputs" / "weights"
         models_dir = REPO_ROOT / "outputs" / "models"
@@ -92,7 +89,6 @@ class YOLOv8:
         elif (outputs_dir / mw.name).is_file():
             self.model_weight = str((outputs_dir / mw.name).resolve())
         elif (REPO_ROOT / "weights" / mw.name).is_file():
-            # Migracja wagi z ewentualnego katalogu głównego weights/ do outputs/weights/
             target_pt = weights_dir / mw.name
             shutil.copy2(REPO_ROOT / "weights" / mw.name, target_pt)
             self.model_weight = str(target_pt.resolve())
@@ -102,10 +98,9 @@ class YOLOv8:
             self.model_weight = str(model_weight)
         self.task = task
 
-        # Inicjalizacja modelu Ultralytics (jeśli waga nie istnieje, zostanie pobrana do self.model_weight)
         self.model = YOLO(self.model_weight, task=self.task)
 
-        # Upewnienie się, że plik wagi bazowej jest dostępny także w outputs/
+        # Ensure base weight file is accessible in outputs/
         try:
             resolved_weight = Path(self.model_weight)
             if resolved_weight.is_file() and resolved_weight.parent.resolve() == weights_dir.resolve():
@@ -118,7 +113,6 @@ class YOLOv8:
         except Exception:
             pass
 
-        # Przeniesienie na odpowiednie urządzenie
         try:
             if hasattr(self.model, "to"):
                 self.model.to(self.device)
@@ -144,25 +138,25 @@ class YOLOv8:
         **kwargs: Any,
     ) -> Any:
         """
-        Trenuje model YOLOv8 na zadanym zbiorze danych.
+        Train the YOLOv8 model on a specified dataset.
 
         Args:
-            data: Ścieżka do pliku data.yaml (np. data/combined_dataset/data.yaml).
-            epochs: Liczba epok treningu.
-            imgsz: Rozdzielczość obrazu wejściowego (domyślnie 640).
-            batch: Rozmiar batcha.
-            lr0: Początkowy współczynnik uczenia.
-            workers: Liczba wątków loadera danych.
-            device: Urządzenie obliczeniowe ('cuda:0', 'cpu' itp.).
-            project: Katalog nadrzędny wyników treningu (domyślnie outputs/runs/yolo).
-            name: Nazwa folderu eksperymentu.
-            exist_ok: Nadpisywanie istniejącego folderu eksperymentu.
-            save: Zapisywanie wag checkpointów.
-            verbose: Wypisywanie szczegółów treningu.
-            **kwargs: Dodatkowe parametry przekazywane do model.train().
+            data: Path to data.yaml dataset definition.
+            epochs: Total number of training epochs.
+            imgsz: Target image input size (default 640).
+            batch: Training batch size.
+            lr0: Initial learning rate.
+            workers: DataLoader worker threads.
+            device: Computation device ('cuda:0', 'cpu', etc.).
+            project: Directory to save training runs.
+            name: Experiment subfolder name.
+            exist_ok: Overwrite existing experiment folder.
+            save: Save checkpoints during training.
+            verbose: Verbose training output.
+            **kwargs: Extra arguments forwarded to model.train().
 
         Returns:
-            Obiekt wyników treningu Ultralytics (results).
+            Ultralytics training results object.
         """
         data_path = Path(data)
         if not data_path.is_absolute():
@@ -170,16 +164,16 @@ class YOLOv8:
 
         if not data_path.exists():
             raise FileNotFoundError(
-                f"Nie znaleziono pliku konfiguracji zbioru: {data_path}.\n"
-                "Uruchom najpierw: python src/scripts/data_download.py"
+                f"Dataset configuration not found: {data_path}.\n"
+                "Run data preparation first, e.g.: python src/scripts/weight_dataset.py"
             )
 
         train_project = project or str(REPO_ROOT / "outputs" / "runs" / "yolo")
         target_device = device if device is not None else self.device
         kwargs.pop("device", None)
 
-        print(f"[YOLOv8] Rozpoczynam trening na urządzeniu: {target_device}")
-        print(f"[YOLOv8] Zbiór: {data_path} | Epoki: {epochs} | Batch: {batch} | Imgsz: {imgsz}")
+        print(f"[YOLOv8] Starting training on device: {target_device}")
+        print(f"[YOLOv8] Dataset: {data_path} | Epochs: {epochs} | Batch: {batch} | Imgsz: {imgsz}")
 
         results = self.model.train(
             data=str(data_path),
@@ -197,29 +191,27 @@ class YOLOv8:
             **kwargs,
         )
 
-        # Zapis ścieżki do najlepszych wag
         task_subfolder = "segment" if ("seg" in str(self.model_weight) or self.task == "segment") else "detect"
         trainer_dir = getattr(self.model.trainer, "save_dir", None)
         save_dir = Path(trainer_dir) if trainer_dir else Path(train_project) / task_subfolder / name
         best_pt = save_dir / "weights" / "best.pt"
+
         if best_pt.exists():
             self.best_weight_path = best_pt
-            print(f"[YOLOv8] Najlepsze wagi zapisano w: {self.best_weight_path}")
+            print(f"[YOLOv8] Best weights saved to: {self.best_weight_path}")
 
-            # Kopiujemy wagi do outputs/models/ oraz outputs/weights/ dla łatwego dostępu
             models_dir = REPO_ROOT / "outputs" / "models"
             weights_dir = REPO_ROOT / "outputs" / "weights"
             models_dir.mkdir(parents=True, exist_ok=True)
             weights_dir.mkdir(parents=True, exist_ok=True)
             saved_filename = "ragwort_yolov8_seg_best.pt" if task_subfolder == "segment" else "ragwort_yolov8_best.pt"
             saved_copy = models_dir / saved_filename
-            import shutil
+
             shutil.copy2(best_pt, saved_copy)
             shutil.copy2(best_pt, weights_dir / saved_filename)
             shutil.copy2(best_pt, weights_dir / "best.pt")
-            print(f"[YOLOv8] Kopia wag zapisana w: {saved_copy} oraz {weights_dir}")
+            print(f"[YOLOv8] Copies saved to: {saved_copy} and {weights_dir}")
 
-            # Usunięcie ewentualnie utworzonego folderu weights/ w katalogu głównym
             root_w = REPO_ROOT / "weights"
             if root_w.is_dir() and root_w.resolve() != weights_dir.resolve():
                 for f in root_w.iterdir():
@@ -242,31 +234,18 @@ class YOLOv8:
         **kwargs: Any,
     ) -> List[Dict[str, Any]]:
         """
-        Wykonuje predykcję detekcji lub segmentacji na obrazie lub liście obrazów.
+        Run object detection or segmentation inference on an image or batch of images.
 
         Args:
-            source: Obraz (PIL, numpy, ścieżka do pliku, folder, tensor).
-            conf: Próg ufności (confidence threshold, 0.0 - 1.0).
-            iou: Próg IoU dla NMS (Non-Maximum Suppression).
-            imgsz: Rozmiar wejściowy obrazu.
-            verbose: Czy wypisywać logi inferencji.
-            **kwargs: Dodatkowe argumenty dla model.predict().
+            source: Image input (PIL Image, numpy array, filepath, directory, tensor).
+            conf: Confidence threshold (0.0 to 1.0).
+            iou: IoU threshold for Non-Maximum Suppression (NMS).
+            imgsz: Input image resolution.
+            verbose: Enable verbose logging.
+            **kwargs: Additional arguments for model.predict().
 
         Returns:
-            Lista słowników dla każdego przetworzonego obrazu:
-            [
-                {
-                    "boxes": [[xmin, ymin, xmax, ymax], ...],  # w pikselach
-                    "scores": [0.94, ...],                     # prawdopodobieństwa
-                    "labels": [0, ...],                        # indeksy klas
-                    "class_names": ["ragwort", ...],           # nazwy klas
-                    "masks": [np.ndarray, ...],                # poligony masek (piksele)
-                    "masks_normalized": [np.ndarray, ...],     # poligony znormalizowane (0..1)
-                    "orig_shape": (wysokość, szerokość),
-                    "raw": Obiekt Results z ultralytics
-                },
-                ...
-            ]
+            List of parsed prediction dictionaries per image.
         """
         raw_results = self.model.predict(
             source=source,
@@ -289,12 +268,10 @@ class YOLOv8:
             masks_xyn: List[np.ndarray] = []
 
             if res.boxes is not None and len(res.boxes) > 0:
-                # boxes w formacie [xmin, ymin, xmax, ymax]
                 boxes_xyxy = res.boxes.xyxy.cpu().numpy().tolist()
                 scores = res.boxes.conf.cpu().numpy().tolist()
                 labels = res.boxes.cls.cpu().numpy().astype(int).tolist()
 
-                # Mapowanie ID klasy na nazwę
                 names_dict = res.names or {}
                 class_names = [names_dict.get(cls_id, str(cls_id)) for cls_id in labels]
 
@@ -324,20 +301,20 @@ class YOLOv8:
         iou: float = 0.45,
     ) -> Dict[str, List[List[float]]]:
         """
-        Generuje słownik predykcji bezpośrednio kompatybilny z modułem data_eval.py:
-            { "nazwa_zdjecia.jpg": [[xmin, ymin, xmax, ymax], ...] }
+        Generate predictions dictionary mapping filename to bounding boxes:
+            { "image_filename.jpg": [[xmin, ymin, xmax, ymax], ...] }
 
         Args:
-            images_dir: Ścieżka do katalogu ze zdjęciami testowymi.
-            conf: Próg ufności.
-            iou: Próg NMS.
+            images_dir: Directory containing test images.
+            conf: Confidence threshold.
+            iou: NMS IoU threshold.
 
         Returns:
-            Słownik: nazwa_pliku -> lista ramek [xmin, ymin, xmax, ymax].
+            Dictionary mapping image filename to list of bounding boxes.
         """
         img_dir = Path(images_dir)
         if not img_dir.exists():
-            raise FileNotFoundError(f"Katalog zdjęć nie istnieje: {img_dir}")
+            raise FileNotFoundError(f"Image directory not found: {img_dir}")
 
         image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
         image_files = [
@@ -366,9 +343,7 @@ class YOLOv8:
         verbose: bool = True,
         **kwargs: Any,
     ) -> Any:
-        """
-        Wykonuje walidację modelu i zwraca metryki (mAP50, mAP50-95 itp.).
-        """
+        """Run validation on a dataset split and return validation metrics."""
         data_path = Path(data)
         if not data_path.is_absolute():
             data_path = (REPO_ROOT / data_path).resolve()
@@ -387,23 +362,21 @@ class YOLOv8:
         )
 
     def export(self, format: str = "onnx", **kwargs: Any) -> str:
-        """Eksportuje model do formatu np. 'onnx', 'torchscript'."""
+        """Export model to target format (e.g. 'onnx', 'torchscript')."""
         return self.model.export(format=format, **kwargs)
 
     def __call__(self, *args: Any, **kwargs: Any) -> List[Dict[str, Any]]:
-        """Pozwala wywołać instancję jak funkcję: model(obraz)."""
         return self.predict(*args, **kwargs)
 
 
 if __name__ == "__main__":
-    print("=== Test inicjalizacji modelu YOLOv8 Small ===")
+    print("=== YOLOv8 Model Initialization Test ===")
     yolo = YOLOv8(model_weight="yolov8s.pt")
-    print(f"Urządzenie modelu: {yolo.device}")
+    print(f"Model device: {yolo.device}")
 
-    # Test predykcji na syntetycznym obrazie
     dummy_image = Image.new("RGB", (640, 640), color=(50, 120, 50))
     res = yolo.predict(dummy_image)
 
-    print("Inferencja zakończona sukcesem!")
-    print("Liczba wykrytych ramek:", len(res[0]["boxes"]))
-    print("Kształt wejściowy:", res[0]["orig_shape"])
+    print("Inference completed successfully!")
+    print("Detected boxes:", len(res[0]["boxes"]))
+    print("Original input shape:", res[0]["orig_shape"])

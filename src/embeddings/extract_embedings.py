@@ -1,15 +1,30 @@
+"""
+File: src/embeddings/extract_embedings.py
+Usage:
+    python -m src.embeddings.extract_embedings
+    # or: python src/embeddings/extract_embedings.py
+Description:
+    Extracts feature embeddings for all dataset images using DINOv3
+    and saves the embeddings, labels, and image paths to an NPZ archive.
+"""
 
 from pathlib import Path
+import sys
 
 import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
 
-from models.dinov3 import DINOv3
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
+try:
+    from src.models.dinov3 import DINOv3
+except ImportError:
+    from models.dinov3 import DINOv3
 
-# Paths
 DATA_DIR = Path("data/dino_dataset")
 OUTPUT_PATH = Path("outputs/embeddings.npz")
 
@@ -20,12 +35,13 @@ CLASSES = {
 
 
 def get_images():
-    """Get all images and their labels from the dataset."""
-
+    """Get all images and their labels from the dataset directory."""
     images = []
 
     for class_name, label in CLASSES.items():
         class_dir = DATA_DIR / class_name
+        if not class_dir.exists():
+            continue
 
         for image_path in class_dir.iterdir():
             if image_path.suffix.lower() in [".jpg", ".jpeg", ".png"]:
@@ -35,10 +51,13 @@ def get_images():
 
 
 def extract_embeddings():
-    """Extract one DINOv3 embedding for every image."""
-
+    """Extract DINOv3 embeddings for every image using mean pooling over tokens."""
     model = DINOv3()
     images = get_images()
+
+    if not images:
+        print(f"No images found in {DATA_DIR}")
+        return
 
     embeddings = []
     labels = []
@@ -50,7 +69,6 @@ def extract_embeddings():
         with torch.no_grad():
             features = model.extract_features(image)
 
-        # Mean pooling over all image tokens
         embedding = features.mean(dim=1).squeeze(0)
 
         embeddings.append(embedding.cpu().numpy())
@@ -76,4 +94,3 @@ def extract_embeddings():
 
 if __name__ == "__main__":
     extract_embeddings()
-

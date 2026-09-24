@@ -1,35 +1,13 @@
 """
-data_download.py
-
-Pobiera dwa zbiory danych do detekcji starca (ragwort / Jakobskreuzkraut)
-z Roboflow Universe, łączy je w jeden zbiór ze wspólną listą klas i dzieli
-wynik na podzbiory train/test.
-
-Zbiory danych:
-  - https://universe.roboflow.com/group-project-i4pjs/ragwort-detect
-    (workspace: group-project-i4pjs, project: ragwort-detect, 50 zdjęć, 1 klasa: "ragwort")
-  - https://universe.roboflow.com/jakobskreuzkraut/jakobskreuzkraut-lsgca
-    (workspace: jakobskreuzkraut, project: jakobskreuzkraut-lsgca, 895 zdjęć, klasy: "Jakobskreuzkraut", "objects")
-
-Wymagania
----------
-pip install roboflow pyyaml
-
-Potrzebny jest też darmowy klucz API Roboflow:
-  1. Załóż konto na https://app.roboflow.com
-  2. Wejdź w Settings -> API Keys, skopiuj "Private API Key"
-  3. Ustaw zmienną środowiskową ROBOFLOW_API_KEY albo podaj --api-key
-
-Uwaga na licencje:
-  - ragwort-detect jest na licencji CC BY 4.0 -> przy publikacji/użyciu
-    wyników wymagane jest podanie autora/źródła.
-  - jakobskreuzkraut-lsgca jest na licencji CC0 (domena publiczna).
-
-Użycie
-------
-python src/scripts/data_download.py --api-key TWOJ_KLUCZ
-python src/scripts/data_download.py --test-size 0.15 --seed 123
-python src/scripts/data_download.py --exclude-classes objects
+File: src/scripts/data_download.py
+Usage:
+    python src/scripts/data_download.py --api-key YOUR_API_KEY
+    python src/scripts/data_download.py --test-size 0.15 --seed 123
+    python src/scripts/data_download.py --exclude-classes objects
+Description:
+    Downloads ragwort detection datasets from Roboflow Universe,
+    merges them into a combined dataset with unified class mappings,
+    and partitions the images and YOLO labels into train/test splits.
 """
 
 from __future__ import annotations
@@ -44,20 +22,18 @@ from typing import Dict, List, Optional, Tuple
 
 try:
     import yaml
-except ImportError as exc:  # pragma: no cover
+except ImportError as exc:
     raise SystemExit(
-        "Brakuje zależności 'pyyaml'. Zainstaluj: pip install pyyaml"
+        "Missing dependency 'pyyaml'. Install via: pip install pyyaml"
     ) from exc
 
 try:
     from roboflow import Roboflow
-except ImportError as exc:  # pragma: no cover
+except ImportError as exc:
     raise SystemExit(
-        "Brakuje zależności 'roboflow'. Zainstaluj: pip install roboflow"
+        "Missing dependency 'roboflow'. Install via: pip install roboflow"
     ) from exc
 
-
-# src/scripts/data_download.py -> src -> katalog główny projektu
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "combined_dataset"
@@ -68,10 +44,10 @@ IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 @dataclass
 class DatasetSpec:
-    key: str  # krótki prefiks używany w nazwach plików wyjściowych
+    key: str  # Short prefix used in destination filenames
     workspace: str
     project: str
-    version: Optional[int] = None  # None -> użyj najnowszej dostępnej wersji
+    version: Optional[int] = None  # None -> use latest available version
 
 
 DATASETS: List[DatasetSpec] = [
@@ -88,83 +64,81 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--api-key",
         default=os.environ.get("ROBOFLOW_API_KEY"),
-        help="Klucz API Roboflow (albo ustaw zmienną środowiskową ROBOFLOW_API_KEY)",
+        help="Roboflow API key (or set ROBOFLOW_API_KEY environment variable)",
     )
     parser.add_argument(
         "--format",
         default="yolov8",
-        help="Format eksportu obsługiwany przez Roboflow, np. yolov8, yolov5pytorch, coco (domyślnie: yolov8)",
+        help="Export format supported by Roboflow, e.g. yolov8, coco (default: yolov8)",
     )
     parser.add_argument(
         "--ragwort-version",
         type=int,
         default=None,
-        help="Numer wersji zbioru ragwort-detect (domyślnie: najnowsza)",
+        help="Dataset version number for ragwort-detect (default: latest)",
     )
     parser.add_argument(
         "--jkk-version",
         type=int,
         default=None,
-        help="Numer wersji zbioru jakobskreuzkraut-lsgca (domyślnie: najnowsza)",
+        help="Dataset version number for jakobskreuzkraut-lsgca (default: latest)",
     )
     parser.add_argument(
         "--test-size",
         type=float,
         default=0.2,
-        help="Udział danych trafiających do zbioru testowego (domyślnie: 0.2)",
+        help="Fraction of data reserved for the test split (default: 0.2)",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
-        help="Ziarno losowości dla powtarzalnego podziału (domyślnie: 42)",
+        help="Random seed for reproducible dataset split (default: 42)",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
-        help="Gdzie zapisać połączony zbiór train/test",
+        help="Output directory for the combined train/test dataset",
     )
     parser.add_argument(
         "--raw-dir",
         type=Path,
         default=DEFAULT_RAW_DIR,
-        help="Gdzie zapisać surowe pobrane dane (przed połączeniem)",
+        help="Directory to save raw downloads before merging",
     )
     parser.add_argument(
         "--exclude-classes",
         nargs="*",
         default=[],
-        help="Nazwy klas do całkowitego pominięcia (bez rozróżniania wielkości liter), np. --exclude-classes objects",
+        help="Class names to omit (case-insensitive), e.g. --exclude-classes objects",
     )
     parser.add_argument(
         "--keep-raw",
         action="store_true",
-        help="Zachowaj surowe, pobrane dane po połączeniu (domyślnie: są usuwane)",
+        help="Keep raw downloaded datasets after merging",
     )
     args = parser.parse_args()
 
     if not args.api_key:
         parser.error(
-            "Wymagany jest klucz API Roboflow. Podaj --api-key albo ustaw zmienną ROBOFLOW_API_KEY."
+            "Roboflow API key required. Pass --api-key or set ROBOFLOW_API_KEY environment variable."
         )
     if not 0 < args.test_size < 1:
-        parser.error("--test-size musi być w przedziale (0, 1)")
+        parser.error("--test-size must be in (0, 1)")
     return args
 
 
 def resolve_version(project, requested: Optional[int]):
-    """Zwraca obiekt Version -- podaną wersję albo najnowszą dostępną."""
+    """Return Roboflow Version object: requested version or latest available."""
     if requested is not None:
         return project.version(requested)
 
     versions = project.versions()
     if not versions:
-        raise RuntimeError(f"Nie znaleziono żadnej wersji dla projektu '{project.id}'")
+        raise RuntimeError(f"No versions found for project '{project.id}'")
 
     def version_number(v) -> int:
-        # v.version bywa albo samą liczbą, albo pełnym identyfikatorem
-        # w stylu "workspace/project/N" -- w obu przypadkach interesuje nas N.
         return int(str(v.version).split("/")[-1])
 
     latest = max(versions, key=version_number)
@@ -172,7 +146,7 @@ def resolve_version(project, requested: Optional[int]):
 
 
 def download_dataset(rf: Roboflow, spec: DatasetSpec, fmt: str, raw_dir: Path) -> Path:
-    print(f"[pobieranie] {spec.workspace}/{spec.project} (format={fmt}) ...")
+    print(f"[download] {spec.workspace}/{spec.project} (format={fmt})...")
     project = rf.workspace(spec.workspace).project(spec.project)
     version = resolve_version(project, spec.version)
 
@@ -181,14 +155,14 @@ def download_dataset(rf: Roboflow, spec: DatasetSpec, fmt: str, raw_dir: Path) -
         shutil.rmtree(target_dir)
 
     dataset = version.download(fmt, location=str(target_dir))
-    print(f"[pobieranie] zapisano w {dataset.location}")
+    print(f"[download] saved to {dataset.location}")
     return Path(dataset.location)
 
 
 def load_class_names(dataset_dir: Path) -> List[str]:
     yaml_path = dataset_dir / "data.yaml"
     if not yaml_path.exists():
-        raise FileNotFoundError(f"Nie znaleziono data.yaml w {dataset_dir}")
+        raise FileNotFoundError(f"data.yaml not found in {dataset_dir}")
 
     with open(yaml_path, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
@@ -197,12 +171,12 @@ def load_class_names(dataset_dir: Path) -> List[str]:
     if isinstance(names, dict):
         names = [names[i] for i in sorted(names, key=int)]
     if not isinstance(names, list):
-        raise ValueError(f"Nieoczekiwany format pola 'names' w {yaml_path}: {names!r}")
+        raise ValueError(f"Unexpected 'names' format in {yaml_path}: {names!r}")
     return [str(n) for n in names]
 
 
 def collect_samples(dataset_dir: Path) -> List[Tuple[Path, Path]]:
-    """Zbiera wszystkie pary obraz/etykieta ze splitów train/valid/test utworzonych przez Roboflow."""
+    """Collect image/label pairs from train/valid/test splits."""
     samples: List[Tuple[Path, Path]] = []
     for split in ("train", "valid", "test"):
         images_dir = dataset_dir / split / "images"
@@ -229,10 +203,8 @@ def build_global_classes(
     aliases: Optional[Dict[str, str]] = None,
 ) -> Tuple[List[str], Dict[str, Dict[int, Optional[int]]]]:
     """
-    Łączy listy klas wszystkich zbiorów w jedną, globalną listę (bez duplikatów,
-    porównywanych bez rozróżniania wielkości liter, z uwzględnieniem synonimów)
-    i buduje mapowanie lokalny_indeks -> globalny_indeks dla każdego zbioru.
-    Wartość None oznacza "pomiń tę klasę" (była na liście --exclude-classes).
+    Merge class names into a unified global list with synonym aliasing
+    and return local_index -> global_index mappings.
     """
     alias_map = aliases if aliases is not None else CLASS_ALIASES
     exclude_lower = {c.lower() for c in exclude}
@@ -257,7 +229,7 @@ def build_global_classes(
 
 
 def remap_label_file(src_label: Path, class_map: Dict[int, Optional[int]]) -> List[str]:
-    """Wczytuje plik etykiet YOLO i zwraca linie z przemapowanymi indeksami klas."""
+    """Read YOLO label file and return lines with remapped class indices."""
     if not src_label.exists():
         return []
 
@@ -271,7 +243,7 @@ def remap_label_file(src_label: Path, class_map: Dict[int, Optional[int]]) -> Li
             local_cls = int(parts[0])
             global_cls = class_map.get(local_cls)
             if global_cls is None:
-                continue  # klasa pominięta przez --exclude-classes
+                continue
             parts[0] = str(global_cls)
             out_lines.append(" ".join(parts))
     return out_lines
@@ -327,27 +299,27 @@ def main() -> None:
     args.raw_dir.mkdir(parents=True, exist_ok=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Pobranie obu zbiorów z Roboflow Universe
+    # 1. Download datasets from Roboflow Universe
     dataset_dirs: Dict[str, Path] = {}
     for spec in DATASETS:
         dataset_dirs[spec.key] = download_dataset(rf, spec, args.format, args.raw_dir)
 
-    # 2. Wspólna lista klas + mapowanie indeksów
+    # 2. Build unified class mapping
     per_dataset_names = {key: load_class_names(d) for key, d in dataset_dirs.items()}
     global_classes, class_maps = build_global_classes(per_dataset_names, args.exclude_classes)
-    print(f"[klasy] połączono {len(global_classes)} klas: {global_classes}")
+    print(f"[classes] Combined {len(global_classes)} classes: {global_classes}")
 
-    # 3. Zebranie wszystkich par obraz/etykieta z obu zbiorów (ignorując oryginalny split Roboflow)
+    # 3. Collect samples across datasets
     all_samples: List[Tuple[str, Path, Path]] = []
     for key, d in dataset_dirs.items():
         pairs = collect_samples(d)
-        print(f"[dane] {key}: {len(pairs)} zdjęć")
+        print(f"[data] {key}: {len(pairs)} images")
         all_samples.extend((key, img, lbl) for img, lbl in pairs)
 
     if not all_samples:
-        raise RuntimeError("Nie zebrano żadnych zdjęć z żadnego zbioru -- przerywam.")
+        raise RuntimeError("No images collected from datasets; aborting.")
 
-    # 4. Losowy, powtarzalny podział na train/test
+    # 4. Partition into train/test splits
     random.shuffle(all_samples)
     n_test = max(1, round(len(all_samples) * args.test_size))
     test_samples = all_samples[:n_test]
@@ -357,12 +329,12 @@ def main() -> None:
     n_test_written = write_split(test_samples, class_maps, "test", args.output_dir)
     write_data_yaml(args.output_dir, global_classes)
 
-    print(f"[gotowe] train: {n_train_written} zdjęć, test: {n_test_written} zdjęć")
-    print(f"[gotowe] zbiór zapisany w: {args.output_dir}")
-    print(f"[gotowe] plik konfiguracyjny: {args.output_dir / 'data.yaml'}")
+    print(f"[done] train: {n_train_written} images, test: {n_test_written} images")
+    print(f"[done] Dataset written to: {args.output_dir}")
+    print(f"[done] Config file: {args.output_dir / 'data.yaml'}")
 
     if not args.keep_raw:
-        print(f"[porządki] usuwam surowe pobrane dane z {args.raw_dir}")
+        print(f"[cleanup] Removing raw downloaded data from {args.raw_dir}")
         shutil.rmtree(args.raw_dir, ignore_errors=True)
 
 

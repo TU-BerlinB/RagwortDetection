@@ -1,18 +1,12 @@
 """
-weight_dataset.py - Skrypt do automatycznego wagowania danych dla RagwortDetection.
-
-Zgodnie ze standardem projektu, wszystkie wygenerowane zbiory i manifesty
-zapisywane są w uporządkowanym katalogu `outputs/datasets/`:
-  - outputs/datasets/data_weighted/data_weighted.yaml  (dla YOLO)
-  - outputs/datasets/data_weighted/train_weighted.txt (manifest YOLO)
-  - outputs/datasets/data_weighted/val.txt            (manifest walidacyjny YOLO)
-  - outputs/datasets/coco/train/annotations.json      (dla DEIMv2 / DINOv3)
-  - outputs/datasets/coco/val/annotations.json        (dla DEIMv2 / DINOv3)
-  - outputs/datasets/coco/test/annotations.json       (dla DEIMv2 / DINOv3)
-
-Użycie:
-  python src/scripts/weight_dataset.py
-  python src/scripts/weight_dataset.py --good-weight 15 --other-weight 1
+File: src/scripts/weight_dataset.py
+Usage:
+    python src/scripts/weight_dataset.py
+    python src/scripts/weight_dataset.py --good-weight 15 --other-weight 1
+Description:
+    Automatically weights and balances RagwortDetection dataset sources (Felix_data vs other/synthetic),
+    generating YOLO manifests (data_weighted.yaml, train_weighted.txt, val.txt) and COCO Detection JSON
+    annotations for DEIMv2 / DINOv3 training.
 """
 
 from __future__ import annotations
@@ -37,7 +31,7 @@ DEFAULT_DATASETS_OUT = REPO_ROOT / "outputs" / "datasets"
 
 
 def convert_voc_xml_to_yolo_txt(xml_path: Path, output_txt: Path) -> bool:
-    """Konwertuje etykiety z formatu Pascal VOC XML na format YOLO TXT (znormalizowany)."""
+    """Convert Pascal VOC XML annotations to normalized YOLO TXT format."""
     try:
         tree = ET.parse(xml_path)
         root = tree.getroot()
@@ -84,7 +78,7 @@ def convert_voc_xml_to_yolo_txt(xml_path: Path, output_txt: Path) -> bool:
 
 
 def sanitize_yolo_label_file(lbl_path: Path):
-    """Konwertuje ewentualne wiersze z poligonami (>5 kolumn) na standardowe ramki detekcji (cls xc yc w h)."""
+    """Convert polygon rows (>5 columns) to standard bounding boxes (cls xc yc w h)."""
     if not lbl_path.is_file() or lbl_path.stat().st_size == 0:
         return
     try:
@@ -121,7 +115,7 @@ def sanitize_yolo_label_file(lbl_path: Path):
 
 
 def get_expected_label_path(img_path: Path) -> Path:
-    """Zwraca ścieżkę pliku etykiety, jakiej oczekuje YOLO (img2label_paths)."""
+    """Return expected label path corresponding to image path in YOLO layout."""
     posix_path = img_path.resolve().as_posix()
     sa, sb = "/images/", "/labels/"
     if sa in posix_path:
@@ -132,7 +126,7 @@ def get_expected_label_path(img_path: Path) -> Path:
 
 
 def ensure_label_exists_for_image(img_path: Path, possible_label_dirs: List[Path]) -> Path:
-    """Zapewnia, że dla danego zdjęcia istnieje plik etykiety .txt."""
+    """Ensure a .txt label file exists for the given image, converting VOC XML or copying from candidates if needed."""
     target_lbl = get_expected_label_path(img_path)
     stem = img_path.stem
 
@@ -187,8 +181,8 @@ def export_coco_weighted_dataset(
     output_dir: Optional[Path] = None,
 ) -> Dict[str, Path]:
     """
-    Eksportuje zwagowany zbiór danych do formatu COCO Detection JSON (outputs/datasets/coco/).
-    Wartości file_name są relatywne do concatenated_dir (brak zbędnego powielania plików na dysku).
+    Export weighted dataset to COCO Detection JSON format in outputs/datasets/coco/.
+    File names are relative to concatenated_dir to avoid duplicating image files on disk.
     """
     concatenated_dir = Path(concatenated_dir).resolve()
     coco_root = output_dir or (DEFAULT_DATASETS_OUT / "coco")
@@ -232,9 +226,9 @@ def export_coco_weighted_dataset(
             parsed_cache[p] = parse_img(p)
         return parsed_cache[p]
 
-    print("\n[COCO] Generowanie adnotacji COCO w outputs/datasets/coco/...")
+    print("\n[COCO] Generating COCO annotations in outputs/datasets/coco/...")
 
-    # 1. Trening ze zwagowanymi danymi
+    # 1. Train split with weighted repetitions
     train_coco = {"images": [], "annotations": [], "categories": categories}
     train_img_id = 1
     train_ann_id = 1
@@ -283,7 +277,7 @@ def export_coco_weighted_dataset(
                 train_ann_id += 1
             train_img_id += 1
 
-    # 2. Walidacja (bez powtórzeń)
+    # 2. Validation split (unweighted)
     val_coco = {"images": [], "annotations": [], "categories": categories}
     val_img_id = 1
     val_ann_id = 1
@@ -316,7 +310,7 @@ def export_coco_weighted_dataset(
     val_json_path.write_text(json.dumps(val_coco, indent=2), encoding="utf-8")
     test_json_path.write_text(json.dumps(val_coco, indent=2), encoding="utf-8")
 
-    # Symlinki do zdjęć w outputs/datasets/coco/{split}/images
+    # Symlinks to images in outputs/datasets/coco/{split}/images
     for split_name in ["train", "val", "test"]:
         images_link = coco_root / split_name / "images"
         if not images_link.exists() and not images_link.is_symlink():
@@ -325,7 +319,7 @@ def export_coco_weighted_dataset(
             except Exception:
                 pass
 
-    # Zapis w outputs/combined_dataset_coco dla kompatybilności wstecznej z configiem DEIM
+    # Save to outputs/combined_dataset_coco for backward compatibility with DEIM config
     legacy_root = REPO_ROOT / "outputs" / "combined_dataset_coco"
     for split_name, json_data in [("train", train_coco), ("val", val_coco), ("test", val_coco)]:
         split_dir = legacy_root / split_name
@@ -338,9 +332,9 @@ def export_coco_weighted_dataset(
             except Exception:
                 pass
 
-    print(f"[COCO] Trening COCO: {len(train_coco['images'])} próbek, {len(train_coco['annotations'])} ramek")
-    print(f"[COCO] Walidacja COCO: {len(val_coco['images'])} próbek, {len(val_coco['annotations'])} ramek")
-    print(f"[COCO] Zapisano w: {coco_root}")
+    print(f"[COCO] Training COCO: {len(train_coco['images'])} samples, {len(train_coco['annotations'])} boxes")
+    print(f"[COCO] Validation COCO: {len(val_coco['images'])} samples, {len(val_coco['annotations'])} boxes")
+    print(f"[COCO] Saved to: {coco_root}")
 
     return {
         "train": train_json_path,
@@ -359,7 +353,7 @@ def process_concatenated_dataset(
     output_datasets_dir: Optional[Path] = None,
 ) -> Path:
     """
-    Wagowanie zbioru data_concatenated i zapis do outputs/datasets/.
+    Weight concatenated dataset and write manifests to outputs/datasets/.
     """
     concatenated_dir = Path(concatenated_dir).resolve()
     out_dir = output_datasets_dir or DEFAULT_DATASETS_OUT
@@ -367,16 +361,16 @@ def process_concatenated_dataset(
     yolo_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 75)
-    print(" WAGOWANIE ZBIORU DANYCH (data_concatenated)")
-    print(f" Katalog wejściowy: {concatenated_dir}")
-    print(f" Katalog wyjściowy: {out_dir}")
+    print(" DATASET WEIGHTING (data_concatenated)")
+    print(f" Input directory: {concatenated_dir}")
+    print(f" Output directory: {out_dir}")
     print("=" * 75)
 
     felix_images: List[Path] = []
     other_images: List[Path] = []
     val_images: List[Path] = []
 
-    # 1. Felix_data (GOOD)
+    # 1. Primary data (Felix_data)
     felix_dir = concatenated_dir / "Felix_data"
     felix_label_dirs = []
     if felix_dir.exists():
@@ -389,7 +383,7 @@ def process_concatenated_dataset(
                 felix_images.append(p)
                 ensure_label_exists_for_image(p, felix_label_dirs)
 
-    # 2. Walidacja / test
+    # 2. Validation / test split
     test_dir = concatenated_dir / "combined_dataset" / "test" / "images"
     test_label_dirs = [concatenated_dir / "combined_dataset" / "test" / "labels"]
     if test_dir.exists():
@@ -398,7 +392,7 @@ def process_concatenated_dataset(
                 val_images.append(p)
                 ensure_label_exists_for_image(p, test_label_dirs)
 
-    # 3. Pozostałe (OTHER)
+    # 3. Secondary data (other / synthetic)
     comb_train = concatenated_dir / "combined_dataset" / "train" / "images"
     comb_train_lbls = [concatenated_dir / "combined_dataset" / "train" / "labels"]
     if comb_train.exists():
@@ -424,7 +418,7 @@ def process_concatenated_dataset(
                     lbl_dirs = [p.parent.parent / "labels", p.parent / "labels"]
                     ensure_label_exists_for_image(p, lbl_dirs)
 
-    # Wydzielenie próbki Felix_data do walidacji
+    # Reserve fraction of Felix_data for validation
     import random
     random.seed(42)
     shuffled_felix = list(felix_images)
@@ -435,14 +429,14 @@ def process_concatenated_dataset(
     train_felix = shuffled_felix[n_val_felix:]
     val_images.extend(val_felix)
 
-    # Czyszczenie starych plików cache
+    # Clean up legacy cache files
     for cache_file in concatenated_dir.rglob("*.cache"):
         try:
             cache_file.unlink()
         except Exception:
             pass
 
-    # Przygotowanie manifestów YOLO (ze ścieżkami względnymi kompatybilnymi z Docker oraz OS hosta)
+    # Prepare YOLO manifests with relative paths compatible with Docker and host OS
     def to_yolo_rel(img_path: Path, base_dir: Path) -> str:
         rel = os.path.relpath(img_path.resolve(), base_dir.resolve()).replace("\\", "/")
         return f"./{rel}"
@@ -476,7 +470,7 @@ def process_concatenated_dataset(
     with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.dump(yaml_data, f, sort_keys=False, allow_unicode=True)
 
-    # Kopia do data/data_concatenated/ ze ścieżkami relatywnymi względem concatenated_dir
+    # Copy to data/data_concatenated/ with relative paths from concatenated_dir
     try:
         concat_train_lines: List[str] = []
         for p in train_felix:
@@ -498,7 +492,7 @@ def process_concatenated_dataset(
     except Exception:
         pass
 
-    # Eksport do COCO
+    # Export to COCO
     coco_paths = {}
     if export_coco:
         coco_paths = export_coco_weighted_dataset(
@@ -511,7 +505,7 @@ def process_concatenated_dataset(
             output_dir=out_dir / "coco",
         )
 
-    # Statystyki
+    # Statistics
     total_good_train = len(train_felix)
     total_other_train = len(other_images)
     weighted_good = total_good_train * good_weight
@@ -520,28 +514,28 @@ def process_concatenated_dataset(
     pct_good = (weighted_good / total_steps * 100) if total_steps > 0 else 0
 
     print("\n" + "=" * 75)
-    print(" SUKCES! ZBIÓR ZOSTAŁ ZWAGOWANY:")
+    print(" DATASET WEIGHTING COMPLETE")
     print("=" * 75)
-    print("1. DANE IDEALNE (Felix_data):")
-    print(f"   - Unikalne zdjęcia:        {total_good_train} szt.")
-    print(f"   - Waga (mnożnik):          {good_weight}x")
-    print(f"   - Próbek w epoce:          {weighted_good} kroków")
-    print("2. DANE POZOSTAŁE (other / synthetic):")
-    print(f"   - Unikalne zdjęcia:        {total_other_train} szt.")
-    print(f"   - Waga:                    {other_weight}x")
-    print(f"   - Próbek w epoce:          {weighted_other} kroków")
-    print("3. BILANS TRENINGU:")
-    print(f"   - Łącznie kroków w epoce:  {total_steps}")
-    print(f"   - WPŁYW DANYCH FELIXA:     {pct_good:.1f}% WSZYSTKICH GRADIENTÓW W KAŻDEJ EPOCE!")
-    print(f"4. WALIDACJA (val.txt):       {len(val_images)} szt.")
-    print("5. ZAPISANE STRUKTURY W outputs/datasets/:")
-    print(f"   - Konfiguracja YOLO:       {yaml_path}")
-    print(f"   - Manifest treningowy:     {train_txt_path}")
-    print(f"   - Manifest walidacyjny:    {val_txt_path}")
+    print("1. PRIMARY DATA (Felix_data):")
+    print(f"   - Unique images:           {total_good_train}")
+    print(f"   - Weight (multiplier):     {good_weight}x")
+    print(f"   - Samples per epoch:       {weighted_good} steps")
+    print("2. SECONDARY DATA (other / synthetic):")
+    print(f"   - Unique images:           {total_other_train}")
+    print(f"   - Weight:                  {other_weight}x")
+    print(f"   - Samples per epoch:       {weighted_other} steps")
+    print("3. TRAINING BALANCE:")
+    print(f"   - Total steps per epoch:   {total_steps}")
+    print(f"   - FELIX DATA IMPACT:       {pct_good:.1f}% OF ALL GRADIENTS PER EPOCH")
+    print(f"4. VALIDATION (val.txt):      {len(val_images)} images")
+    print("5. OUTPUT ARTIFACTS IN outputs/datasets/:")
+    print(f"   - YOLO config:             {yaml_path}")
+    print(f"   - Training manifest:       {train_txt_path}")
+    print(f"   - Validation manifest:     {val_txt_path}")
     if coco_paths:
-        print(f"   - Adnotacje COCO (DINO):   {coco_paths.get('train')}")
+        print(f"   - COCO annotations (DINO): {coco_paths.get('train')}")
     print("=" * 75)
-    print("\n>>> URUCHOMIENIE TRENINGU:")
+    print("\n>>> START TRAINING:")
     print(f"    YOLO: python src/train_evaluation/yolo_eval.py --epochs 60 --batch 16 --imgsz 640")
     print(f"    DINO: python src/train_evaluation/DINO_DEIM_eval.py --epochs 30 --batch-size 4\n")
 
@@ -549,11 +543,11 @@ def process_concatenated_dataset(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Wagowanie danych i eksport do outputs/datasets/.")
-    parser.add_argument("--concatenated-dir", type=Path, default=DEFAULT_CONCAT_DIR, help="Ścieżka do folderu data_concatenated")
-    parser.add_argument("--good-weight", type=int, default=15, help="Waga dla zdjęć idealnych Felix_data (domyślnie: 15x)")
-    parser.add_argument("--other-weight", type=int, default=1, help="Waga dla pozostałych zdjęć (domyślnie: 1x)")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_DATASETS_OUT, help="Katalog wyjściowy (domyślnie: outputs/datasets)")
+    parser = argparse.ArgumentParser(description="Weight dataset sources and export YOLO/COCO training manifests.")
+    parser.add_argument("--concatenated-dir", type=Path, default=DEFAULT_CONCAT_DIR, help="Path to data_concatenated directory")
+    parser.add_argument("--good-weight", type=int, default=15, help="Weight multiplier for primary Felix_data images (default: 15x)")
+    parser.add_argument("--other-weight", type=int, default=1, help="Weight multiplier for other images (default: 1x)")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_DATASETS_OUT, help="Output directory (default: outputs/datasets)")
     args = parser.parse_args()
 
     process_concatenated_dataset(

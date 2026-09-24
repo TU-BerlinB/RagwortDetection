@@ -1,19 +1,17 @@
-#!/usr/bin/env python3
 """
-DINO_DEIM_eval.py - Trening, walidacja i ewaluacja modelu DEIMv2 + DINOv3 (ze zbalansowanym/zwagowanym zbiorem danych).
-
-Funkcjonalności:
-  1. Automatyczne generowanie zwagowanego zbioru COCO (Felix_data np. 15x, pozostałe 1x) bez kopiowania zdjęć.
-  2. Trening detektora DEIMv2 (DINOv3 backbone) z optymalnym harmonogramem epok pod GPU RTX (np. 6 GB VRAM).
-  3. Oficjalna ewaluacja COCO (mAP50, mAP50-95, APs, APm, APl).
-  4. Ewaluacja data_eval (IoU = 0.5, Precision, Recall, F1, True Positives, zapis błędów FP/FN).
-  5. Testy na zewnętrznych zdjęciach z internetu z rysowaniem ramek i werdyktem.
-  6. Zapis najlepszego checkpointu do models/ragwort_deimv2_best.pth oraz eksport do model.pt.
-
-Przykłady użycia:
-  python src/train_evaluation/DINO_DEIM_eval.py --epochs 30 --batch-size 4 --device cuda
-  python src/train_evaluation/DINO_DEIM_eval.py --smoke-test --batch-size 4
-  python src/train_evaluation/DINO_DEIM_eval.py --skip-train --resume outputs/checkpoints/deimv2_dinov3_ragwort/best_stg1.pth
+File: src/train_evaluation/DINO_DEIM_eval.py
+Usage:
+    python src/train_evaluation/DINO_DEIM_eval.py --epochs 30 --batch-size 4 --device cuda
+    python src/train_evaluation/DINO_DEIM_eval.py --smoke-test --batch-size 4
+    python src/train_evaluation/DINO_DEIM_eval.py --skip-train --resume outputs/checkpoints/deimv2_dinov3_ragwort/best_stg1.pth
+Description:
+    Training, validation, and evaluation pipeline for DEIMv2 + DINOv3 on weighted datasets:
+      1. Automatic weighted COCO dataset generation without image duplication.
+      2. DEIMv2 detector training (DINOv3 backbone) optimized for GPU VRAM.
+      3. Standard COCO evaluation (mAP50, mAP50-95, APs, APm, APl).
+      4. Custom IoU=0.5 evaluation (Precision, Recall, F1, error analysis saving FP/FN).
+      5. Generalization inference on external images with bounding box visualizations.
+      6. Best checkpoint export to model.pt and ragwort_deimv2_best.pth.
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 def find_deimv2_root() -> Path:
-    """Automatycznie wykrywa katalog repozytorium DEIMv2 w kontenerze lub na hoście."""
+    """Detect DEIMv2 repository directory in Docker container or on the host."""
     candidates = [
         Path("/DEIMv2"),
         PROJECT_ROOT.parent / "DEIMv2",
@@ -71,7 +69,7 @@ LEGACY_COCO_DIR = OUTPUTS_DIR / "combined_dataset_coco"
 
 
 def find_data_concat_dir() -> Path:
-    """Szuka katalogu zawierającego dane wejściowe (Felix_data, combined_dataset itp.)."""
+    """Find directory containing input datasets (Felix_data, combined_dataset, etc.)."""
     candidates = [
         DATA_CONCAT_DIR,
         PROJECT_ROOT / "data",
@@ -83,31 +81,30 @@ def find_data_concat_dir() -> Path:
     return DATA_CONCAT_DIR
 
 
-# Zewnętrzne zdjęcia testowe (takie same jak w YOLO)
 EXTERNAL_IMAGES = [
     {
         "filename": "ragwort_field_1.jpg",
         "url": "https://upload.wikimedia.org/wikipedia/commons/0/05/Jacobaea_vulgaris-3235.jpg",
         "expected": "ragwort",
-        "description": "Starzec jakubek (Jacobaea vulgaris) kwitnacy na lace",
+        "description": "Ragwort (Jacobaea vulgaris) blooming in a meadow",
     },
     {
         "filename": "ragwort_flowers_2.jpg",
         "url": "https://upload.wikimedia.org/wikipedia/commons/f/f3/%28MHNT%29_Halictus_rubicundus_on_Jacobaea_vulgaris_-_Villeneuve-les-Bouloc_France.jpg",
         "expected": "ragwort",
-        "description": "Zblizenie na kwiaty starca jakubka z owadem",
+        "description": "Close-up of ragwort flowers with an insect",
     },
     {
         "filename": "negative_dandelion_3.jpg",
         "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/Gesloten_bloem_van_de_paardenbloem_%28Taraxacum_officinale%29_09-05-2021._%28d.j.b%29_02.jpg",
         "expected": "negative",
-        "description": "Mniszek / dmuchawiec (inny zolty kwiat - negatyw)",
+        "description": "Dandelion flower (negative sample with different yellow flowers)",
     },
     {
         "filename": "negative_meadow_4.jpg",
         "url": "https://upload.wikimedia.org/wikipedia/commons/c/cd/Sch%C3%B6nwald_im_Schwarzwald%2C_Escheckstra%C3%9Fe_--_2025_--_0150.jpg",
         "expected": "negative",
-        "description": "Zielona laka i trawa bez starca (negatyw)",
+        "description": "Green meadow and grass without ragwort (negative sample)",
     },
 ]
 
@@ -117,26 +114,26 @@ def parse_args() -> argparse.Namespace:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Ścieżka do konfiguracji YAML DEIMv2")
-    parser.add_argument("--epochs", type=int, default=30, help="Liczba epok treningu (domyślnie: 30)")
-    parser.add_argument("--batch-size", type=int, default=4, help="Rozmiar batcha (domyślnie: 4 dla RTX 4050 6GB)")
-    parser.add_argument("--lr", type=float, default=0.0005, help="Współczynnik uczenia detektora (domyślnie: 0.0005)")
-    parser.add_argument("--workers", type=int, default=4, help="Liczba workerów DataLoader (domyślnie: 4)")
-    parser.add_argument("--device", type=str, default=None, help="Urządzenie obliczeniowe: 'cuda', 'cuda:0', 'cpu'")
-    parser.add_argument("--good-weight", type=int, default=15, help="Waga dla danych wysokiej jakości Felix_data (domyślnie: 15x)")
-    parser.add_argument("--other-weight", type=int, default=1, help="Waga dla pozostałych danych syntetycznych/combined (domyślnie: 1x)")
-    parser.add_argument("--train-backbone", action="store_true", help="Odmrożenie i trenowanie backbone'a DINOv3 ViT")
-    parser.add_argument("--resume", type=Path, default=None, help="Ścieżka do checkpointu .pth do wznowienia lub ewaluacji")
-    parser.add_argument("--skip-train", action="store_true", help="Pomiń trening i przejdź bezpośrednio do ewaluacji i testów")
-    parser.add_argument("--evaluate", action="store_true", help="Uruchom tylko ewaluację COCO (--test-only)")
-    parser.add_argument("--smoke-test", action="store_true", help="Szybki test jednego batcha treningowego i walidacyjnego")
-    parser.add_argument("--rebuild-dataset", action="store_true", help="Wymuś ponowne wygenerowanie zwagowanego zbioru COCO")
-    parser.add_argument("--export-model", action="store_true", help="Wyeksportuj istniejący checkpoint do pliku model.pt")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Path to DEIMv2 YAML config")
+    parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs (default: 30)")
+    parser.add_argument("--batch-size", type=int, default=4, help="Batch size (default: 4 for 6GB VRAM)")
+    parser.add_argument("--lr", type=float, default=0.0005, help="Learning rate for detector (default: 0.0005)")
+    parser.add_argument("--workers", type=int, default=4, help="DataLoader worker count (default: 4)")
+    parser.add_argument("--device", type=str, default=None, help="Device: 'cuda', 'cuda:0', 'cpu'")
+    parser.add_argument("--good-weight", type=int, default=15, help="Oversampling multiplier for Felix_data (default: 15x)")
+    parser.add_argument("--other-weight", type=int, default=1, help="Multiplier for other data (default: 1x)")
+    parser.add_argument("--train-backbone", action="store_true", help="Unfreeze and train DINOv3 ViT backbone")
+    parser.add_argument("--resume", type=Path, default=None, help="Path to .pth checkpoint to resume or evaluate")
+    parser.add_argument("--skip-train", action="store_true", help="Skip training and run evaluation directly")
+    parser.add_argument("--evaluate", action="store_true", help="Run COCO evaluation only (--test-only)")
+    parser.add_argument("--smoke-test", action="store_true", help="Fast smoke test on a single train and validation batch")
+    parser.add_argument("--rebuild-dataset", action="store_true", help="Force rebuilding weighted COCO dataset")
+    parser.add_argument("--export-model", action="store_true", help="Export existing checkpoint to model.pt")
     return parser.parse_args()
 
 
 def ensure_weighted_coco_dataset(good_weight: int = 15, other_weight: int = 1, force: bool = False) -> Dict[str, Path]:
-    """Upewnia się, że zwagowany zbiór COCO istnieje i zawiera próbki; w razie potrzeby generuje go przez weight_dataset.py."""
+    """Ensure weighted COCO dataset exists and contains samples, building it if necessary."""
     train_ann = DATASETS_COCO_DIR / "train" / "annotations.json"
     val_ann = DATASETS_COCO_DIR / "val" / "annotations.json"
 
@@ -155,14 +152,8 @@ def ensure_weighted_coco_dataset(good_weight: int = 15, other_weight: int = 1, f
             pass
 
     concat_dir = find_data_concat_dir()
-    print("\n[DINO_DEIM] Zwagowany zbiór COCO nie został znaleziony lub zażądano przebudowy.")
-    print(f"[DINO_DEIM] Uruchamiam automatyczne wagowanie danych z: {concat_dir}")
-
-    if not concat_dir.exists() or not ((concat_dir / "Felix_data").exists() or (concat_dir / "combined_dataset").exists()):
-        print(
-            f"[OSTRZEŻENIE] Katalog z danymi {concat_dir} nie zawiera podfolderów Felix_data ani combined_dataset.\n"
-            f"Jeśli dane znajdują się w innym miejscu, upewnij się że folder data/data_concatenated lub data/ posiada odpowiednie pliki."
-        )
+    print("\n[DINO_DEIM] Weighted COCO dataset not found or rebuild requested.")
+    print(f"[DINO_DEIM] Running dataset weighting on: {concat_dir}")
 
     from src.scripts.weight_dataset import process_concatenated_dataset
 
@@ -182,7 +173,7 @@ def ensure_weighted_coco_dataset(good_weight: int = 15, other_weight: int = 1, f
 
 
 def update_items(args: argparse.Namespace) -> list[str]:
-    """Generuje listę nadpisań parametrów konfiguracji DEIMv2."""
+    """Generate list of configuration overrides for DEIMv2 CLI."""
     coco_root = DATASETS_COCO_DIR if (DATASETS_COCO_DIR / "train" / "annotations.json").is_file() else LEGACY_COCO_DIR
     output_dir = RUNS_DIR
 
@@ -239,7 +230,7 @@ def update_items(args: argparse.Namespace) -> list[str]:
 
 
 def oblicz_iou(box_a: List[float], box_b: List[float]) -> float:
-    """Oblicza IoU między dwoma ramkami [xmin, ymin, xmax, ymax]."""
+    """Calculate Intersection over Union (IoU) between two bounding boxes [xmin, ymin, xmax, ymax]."""
     x_left = max(box_a[0], box_b[0])
     y_top = max(box_a[1], box_b[1])
     x_right = min(box_a[2], box_b[2])
@@ -248,16 +239,19 @@ def oblicz_iou(box_a: List[float], box_b: List[float]) -> float:
     if x_right < x_left or y_bottom < y_top:
         return 0.0
 
-    pole_przeciecia = (x_right - x_left) * (y_bottom - y_top)
-    pole_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
-    pole_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+    area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+    area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
 
-    pole_calkowite = float(pole_a + pole_b - pole_przeciecia)
-    return (pole_przeciecia / pole_calkowite) if pole_calkowite > 0 else 0.0
+    total_area = float(area_a + area_b - intersection_area)
+    return (intersection_area / total_area) if total_area > 0 else 0.0
+
+
+calculate_iou = oblicz_iou
 
 
 def load_deim_model(config_path: Path, checkpoint_path: Optional[Path], device: torch.device):
-    """Ładuje model DEIMv2 + DINOv3 oraz postprocessor."""
+    """Load DEIMv2 + DINOv3 model architecture and postprocessor."""
     from engine.core import YAMLConfig
 
     cfg = YAMLConfig(str(config_path))
@@ -266,7 +260,7 @@ def load_deim_model(config_path: Path, checkpoint_path: Optional[Path], device: 
 
     if checkpoint_path and Path(checkpoint_path).exists():
         ckpt_p = Path(checkpoint_path)
-        print(f"[DEIM] Ładowanie wag checkpointu: {ckpt_p}")
+        print(f"[DEIM] Loading checkpoint weights: {ckpt_p}")
         data = torch.load(ckpt_p, map_location="cpu")
         state_dict = (
             data.get("ema", {}).get("module")
@@ -275,7 +269,7 @@ def load_deim_model(config_path: Path, checkpoint_path: Optional[Path], device: 
             or data
         )
         model.load_state_dict(state_dict, strict=False)
-        print("[DEIM] Pomyślnie załadowano wagi modelu!")
+        print("[DEIM] Model weights loaded successfully!")
     return model, postprocessor
 
 
@@ -286,7 +280,7 @@ def predict_deim_single(
     device: torch.device,
     conf: float = 0.25,
 ) -> Dict[str, Any]:
-    """Wykonuje detekcję DEIMv2 na pojedynczym obrazie PIL."""
+    """Execute DEIMv2 detection inference on a single PIL Image."""
     w, h = image.size
     orig_size = torch.tensor([[h, w]], device=device)
 
@@ -327,11 +321,11 @@ def ewaluacja_modelu_deim(
     prog_iou: float = 0.5,
     conf_threshold: float = 0.25,
 ) -> Dict[str, float]:
-    """Oblicza Precision, Recall, F1 oraz zapisuje błędy FP/FN dla DEIM."""
-    katalog_fp = EVAL_DIR / "bledy_False_Positives"
-    katalog_fn = EVAL_DIR / "bledy_False_Negatives"
-    katalog_fp.mkdir(parents=True, exist_ok=True)
-    katalog_fn.mkdir(parents=True, exist_ok=True)
+    """Calculate Precision, Recall, and F1 at specified IoU threshold, saving FP and FN error images."""
+    fp_dir = EVAL_DIR / "bledy_False_Positives"
+    fn_dir = EVAL_DIR / "bledy_False_Negatives"
+    fp_dir.mkdir(parents=True, exist_ok=True)
+    fn_dir.mkdir(parents=True, exist_ok=True)
 
     true_positives = 0
     false_positives = 0
@@ -345,7 +339,7 @@ def ewaluacja_modelu_deim(
             preds = predict_deim_single(model, postprocessor, im, device, conf=conf_threshold)
 
         lbl_path = labels_dir / f"{img_path.stem}.txt"
-        ramki_poprawne: List[List[float]] = []
+        ground_truth_boxes: List[List[float]] = []
         if lbl_path.is_file():
             for line in lbl_path.read_text(encoding="utf-8").splitlines():
                 p = line.strip().split()
@@ -355,33 +349,33 @@ def ewaluacja_modelu_deim(
                     ymin = (yc - bh / 2.0) * orig_h
                     xmax = (xc + bw / 2.0) * orig_w
                     ymax = (yc + bh / 2.0) * orig_h
-                    ramki_poprawne.append([xmin, ymin, xmax, ymax])
+                    ground_truth_boxes.append([xmin, ymin, xmax, ymax])
 
-        ramki_modelu = preds["boxes"]
-        znalezione_starce = 0
+        model_boxes = preds["boxes"]
+        matched_gt_count = 0
 
-        for ramka_m in ramki_modelu:
-            trafienie = False
-            for ramka_p in ramki_poprawne:
-                if oblicz_iou(ramka_m, ramka_p) >= prog_iou:
-                    trafienie = True
-                    znalezione_starce += 1
+        for m_box in model_boxes:
+            hit = False
+            for gt_box in ground_truth_boxes:
+                if oblicz_iou(m_box, gt_box) >= prog_iou:
+                    hit = True
+                    matched_gt_count += 1
                     break
 
-            if trafienie:
+            if hit:
                 true_positives += 1
             else:
                 false_positives += 1
                 try:
-                    shutil.copy2(img_path, katalog_fp / f"deim_{img_path.name}")
+                    shutil.copy2(img_path, fp_dir / f"deim_{img_path.name}")
                 except Exception:
                     pass
 
-        przegapione = len(ramki_poprawne) - znalezione_starce
-        if przegapione > 0:
-            false_negatives += przegapione
+        missed = len(ground_truth_boxes) - matched_gt_count
+        if missed > 0:
+            false_negatives += missed
             try:
-                shutil.copy2(img_path, katalog_fn / f"deim_{img_path.name}")
+                shutil.copy2(img_path, fn_dir / f"deim_{img_path.name}")
             except Exception:
                 pass
 
@@ -389,15 +383,15 @@ def ewaluacja_modelu_deim(
     recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
 
-    print("\n--- WYNIKI EWALUACJI DETEKCJI DEIMv2 (IoU = 0.5) ---")
-    print(f"True Positives (Trafione)        : {true_positives}")
-    print(f"False Positives (Błędne alarmy)  : {false_positives}")
-    print(f"False Negatives (Przegapione)    : {false_negatives}")
-    print(f"Precyzja (Precision)             : {precision:.4f}")
-    print(f"Czułość (Recall)                 : {recall:.4f}")
-    print(f"F1-Score                         : {f1:.4f}")
-    print(f"Zdjęcia z fałszywymi alarmami    : {katalog_fp}")
-    print(f"Zdjęcia z przegapionymi starcami : {katalog_fn}")
+    print("\n--- DEIMv2 DETECTION EVALUATION RESULTS (IoU = 0.5) ---")
+    print(f"True Positives  : {true_positives}")
+    print(f"False Positives : {false_positives}")
+    print(f"False Negatives : {false_negatives}")
+    print(f"Precision       : {precision:.4f}")
+    print(f"Recall          : {recall:.4f}")
+    print(f"F1-Score        : {f1:.4f}")
+    print(f"False Positives error folder : {fp_dir}")
+    print(f"False Negatives error folder : {fn_dir}")
 
     return {
         "precision": precision,
@@ -410,46 +404,46 @@ def ewaluacja_modelu_deim(
 
 
 def pobierz_zewnetrzne_zdjecia() -> List[Path]:
-    """Pobiera zdjęcia testowe z internetu."""
+    """Download external verification images from the web."""
     EXTERNAL_DIR.mkdir(parents=True, exist_ok=True)
     headers = {"User-Agent": "RagwortDetectionDEIM/1.0 (academic research; student@university.edu)"}
-    sciezki = []
-    print("\n--- POBIERANIE ZEWNĘTRZNYCH ZDJĘĆ Z INTERNETU ---")
+    paths = []
+    print("\n--- DOWNLOADING EXTERNAL TEST IMAGES ---")
     for item in EXTERNAL_IMAGES:
-        cel = EXTERNAL_DIR / item["filename"]
-        if not cel.exists():
-            print(f"Pobieranie: {item['filename']} ({item['description']})...")
+        dest = EXTERNAL_DIR / item["filename"]
+        if not dest.exists():
+            print(f"Downloading: {item['filename']} ({item['description']})...")
             try:
                 r = requests.get(item["url"], headers=headers, timeout=20)
                 if r.status_code == 200:
-                    cel.write_bytes(r.content)
-                    print(f"  -> Sukces ({len(r.content) // 1024} KB)")
+                    dest.write_bytes(r.content)
+                    print(f"  -> Success ({len(r.content) // 1024} KB)")
                 else:
-                    print(f"  -> Błąd HTTP: {r.status_code}")
+                    print(f"  -> HTTP Error: {r.status_code}")
             except Exception as e:
-                print(f"  -> Wyjątek: {e}")
+                print(f"  -> Exception: {e}")
         else:
-            print(f"Plik już istnieje: {item['filename']}")
-        if cel.exists():
-            sciezki.append(cel)
-    return sciezki
+            print(f"File exists locally: {item['filename']}")
+        if dest.exists():
+            paths.append(dest)
+    return paths
 
 
 def testuj_zewnetrzne_zdjecia_deim(
     model: torch.nn.Module,
     postprocessor: torch.nn.Module,
     device: torch.device,
-    sciezki_zdjec: List[Path],
+    image_paths: List[Path],
 ):
-    """Wykonuje inferencję DEIM na zewnętrznych zdjęciach i zapisuje wizualizacje z ramkami."""
+    """Run DEIM inference on external test images and save visualizations with bounding boxes."""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     meta_info = {item["filename"]: item for item in EXTERNAL_IMAGES}
 
-    print("\n--- WYNIKI TESTÓW DEIMv2 NA ZEWNĘTRZNYCH ZDJĘCIACH ---")
-    print(f"{'Nazwa pliku':<26} | {'Oczekiwane':<10} | {'Wykrycia':<9} | {'Max Conf':<9} | {'Werdykt'}")
+    print("\n--- DEIMv2 EXTERNAL IMAGE INFERENCE RESULTS ---")
+    print(f"{'Filename':<26} | {'Expected':<10} | {'Detections':<10} | {'Max Conf':<9} | {'Verdict'}")
     print("-" * 75)
 
-    for img_path in sciezki_zdjec:
+    for img_path in image_paths:
         meta = meta_info.get(img_path.name, {"expected": "unknown"})
         expected = meta["expected"]
 
@@ -465,11 +459,11 @@ def testuj_zewnetrzne_zdjecia_deim(
         max_conf = max(scores) if scores else 0.0
 
         if expected == "ragwort":
-            werdykt = "SUKCES (Trafiono starca)" if n_det > 0 else "PRZEGAPIONO"
+            verdict = "SUCCESS (Ragwort detected)" if n_det > 0 else "MISSED"
         else:
-            werdykt = "SUKCES (Czysto, brak fałszywych alarmów)" if n_det == 0 else "FAŁSZYWY ALARM"
+            verdict = "SUCCESS (Clean, no false alarms)" if n_det == 0 else "FALSE ALARM"
 
-        print(f"{img_path.name:<26} | {expected:<10} | {n_det:<9} | {max_conf:<9.2f} | {werdykt}")
+        print(f"{img_path.name:<26} | {expected:<10} | {n_det:<10} | {max_conf:<9.2f} | {verdict}")
 
         draw = ImageDraw.Draw(annotated)
         for box, score, cls_name in zip(boxes, scores, classes):
@@ -481,11 +475,11 @@ def testuj_zewnetrzne_zdjecia_deim(
         save_file = RESULTS_DIR / f"deim_wynik_{img_path.name}"
         annotated.save(save_file)
 
-    print(f"\nZdjęcia z narysowanymi ramkami zapisano w: {RESULTS_DIR}")
+    print(f"\nVisualizations saved to: {RESULTS_DIR}")
 
 
 def smoke_test(config_path: Path, overrides: list[str]) -> None:
-    """Szybka walidacja jednego batcha forward / loss / backward / evaluate."""
+    """Fast validation of a single batch: forward pass, loss calculation, backward step, and evaluation."""
     from engine.core import YAMLConfig, yaml_utils
     from engine.solver.det_engine import evaluate
 
@@ -506,13 +500,13 @@ def smoke_test(config_path: Path, overrides: list[str]) -> None:
     loss_dict = criterion(outputs, targets, epoch=0, step=0, global_step=0, epoch_step=1)
     loss = sum(loss_dict.values())
     if not torch.isfinite(loss):
-        raise FloatingPointError(f"Niepoprawna strata treningowa: {loss_dict}")
+        raise FloatingPointError(f"Invalid training loss: {loss_dict}")
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     trainable_with_grad = sum(p.grad is not None for p in model.parameters() if p.requires_grad)
     frozen_with_grad = sum(p.grad is not None for p in model.backbone.dinov3.parameters() if not p.requires_grad)
     optimizer.step()
-    print(f"Smoke train step: strata={loss.item():.4f}; parametry z gradientem={trainable_with_grad}; zamrożone gradienty DINOv3={frozen_with_grad}")
+    print(f"Smoke train step: loss={loss.item():.4f}; trainable with grad={trainable_with_grad}; frozen DINOv3 grads={frozen_with_grad}")
 
     evaluator = cfg.evaluator
     one_val_batch = [next(iter(cfg.val_dataloader))]
@@ -523,10 +517,7 @@ def smoke_test(config_path: Path, overrides: list[str]) -> None:
 
 
 def find_best_checkpoint(output_dir: Path) -> Path:
-    """
-    Znajduje najlepszy checkpoint do wyeksportowania.
-    Priorytet: best_stg1.pth -> best.pth -> last.pth
-    """
+    """Find the best checkpoint to export. Priority: best_stg1.pth -> best.pth -> last.pth."""
     candidates = [
         output_dir / "best_stg1.pth",
         output_dir / "best.pth",
@@ -534,7 +525,7 @@ def find_best_checkpoint(output_dir: Path) -> Path:
     ]
     for checkpoint in candidates:
         if checkpoint.is_file():
-            print(f"[EKSPORT] Znaleziono checkpoint: {checkpoint}")
+            print(f"[Export] Found checkpoint: {checkpoint}")
             return checkpoint
 
     checkpoints = sorted(
@@ -543,16 +534,14 @@ def find_best_checkpoint(output_dir: Path) -> Path:
         reverse=True,
     )
     if checkpoints:
-        print(f"[EKSPORT] Wybrano najnowszy checkpoint: {checkpoints[0]}")
+        print(f"[Export] Selected most recent checkpoint: {checkpoints[0]}")
         return checkpoints[0]
 
-    raise FileNotFoundError(f"Nie znaleziono pliku checkpointu .pth w {output_dir}")
+    raise FileNotFoundError(f"No .pth checkpoint found in {output_dir}")
 
 
 def export_model_pt(config_path: Path, overrides: list[str]) -> Path:
-    """
-    Konwertuje checkpoint DEIMv2 do formatu model.pt z konfiguracją i wagami CPU.
-    """
+    """Convert DEIMv2 checkpoint to model.pt format containing config and CPU weights."""
     from engine.core import YAMLConfig, yaml_utils
 
     cfg = YAMLConfig(str(config_path), **yaml_utils.parse_cli(overrides))
@@ -561,9 +550,9 @@ def export_model_pt(config_path: Path, overrides: list[str]) -> Path:
     checkpoint_path = find_best_checkpoint(output_dir)
 
     print("\n" + "=" * 70)
-    print(" EKSPORT MODELU DO model.pt")
+    print(" EXPORTING MODEL TO model.pt")
     print("=" * 70)
-    print(f"Checkpoint źródłowy: {checkpoint_path}")
+    print(f"Source checkpoint: {checkpoint_path}")
 
     model = cfg.model
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -578,7 +567,7 @@ def export_model_pt(config_path: Path, overrides: list[str]) -> Path:
         else:
             state_dict = checkpoint
     else:
-        raise RuntimeError(f"Nieobsługiwany format checkpointu: {type(checkpoint)}")
+        raise RuntimeError(f"Unsupported checkpoint format: {type(checkpoint)}")
 
     cleaned_state_dict = {
         (k[len("module."):] if k.startswith("module.") else k): v
@@ -587,9 +576,9 @@ def export_model_pt(config_path: Path, overrides: list[str]) -> Path:
 
     missing_keys, unexpected_keys = model.load_state_dict(cleaned_state_dict, strict=False)
     if missing_keys:
-        print(f"Ostrzeżenie: brakujące klucze przy ładowaniu ({len(missing_keys)})")
+        print(f"Warning: missing keys during loading ({len(missing_keys)})")
     if unexpected_keys:
-        print(f"Ostrzeżenie: niespodziewane klucze przy ładowaniu ({len(unexpected_keys)})")
+        print(f"Warning: unexpected keys during loading ({len(unexpected_keys)})")
 
     model.eval()
     state_dict_cpu = {k: v.detach().cpu() for k, v in model.state_dict().items()}
@@ -616,15 +605,14 @@ def export_model_pt(config_path: Path, overrides: list[str]) -> Path:
     model_pt = MODELS_DIR / "model.pt"
     torch.save(export_data, model_pt)
 
-    # Zapisz również kopię w katalogu wyjściowym runu
     run_model_pt = output_dir / "model.pt"
     try:
         shutil.copy2(model_pt, run_model_pt)
     except Exception:
         pass
 
-    print(f"[EKSPORT] Zapisano pomyślnie model: {model_pt}")
-    print(f"[EKSPORT] Rozmiar pliku: {model_pt.stat().st_size / (1024 ** 2):.2f} MB")
+    print(f"[Export] Successfully saved model: {model_pt}")
+    print(f"[Export] File size: {model_pt.stat().st_size / (1024 ** 2):.2f} MB")
     print("=" * 70)
     return model_pt
 
@@ -632,7 +620,6 @@ def export_model_pt(config_path: Path, overrides: list[str]) -> Path:
 def main() -> None:
     args = parse_args()
 
-    # Automatyczne sprawdzenie / przygotowanie zwagowanego zbioru COCO
     ensure_weighted_coco_dataset(
         good_weight=args.good_weight,
         other_weight=args.other_weight,
@@ -641,9 +628,8 @@ def main() -> None:
 
     config_path = args.config.resolve()
     if not config_path.is_file():
-        raise FileNotFoundError(f"Nie znaleziono pliku konfiguracji: {config_path}")
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
 
-    # Przejście do katalogu DEIMv2 dla zachowania poprawnych ścieżek importu
     os.chdir(DEIMV2_ROOT)
     overrides = update_items(args)
 
@@ -655,63 +641,60 @@ def main() -> None:
     device = torch.device(device_str)
 
     print("=" * 75)
-    print(" 1. KONFIGURACJA DEIMv2 + DINOv3 (Z UWZGLĘDNIENIEM WAG)")
+    print(" 1. DEIMv2 + DINOv3 CONFIGURATION")
     print("=" * 75)
-    print(f"[DEIMv2] Urządzenie:             {device}")
+    print(f"[DEIMv2] Device:                 {device}")
     if torch.cuda.is_available() and "cuda" in str(device):
         try:
-            print(f"[DEIMv2] Karta GPU:              {torch.cuda.get_device_name(0)}")
+            print(f"[DEIMv2] GPU:                    {torch.cuda.get_device_name(0)}")
         except Exception:
             pass
-    print(f"[DEIMv2] Katalog DEIMv2:         {DEIMV2_ROOT}")
-    print(f"[DEIMv2] Konfiguracja:           {config_path}")
-    print(f"[DEIMv2] Parametry:              Epoki: {args.epochs}, Batch: {args.batch_size}, LR: {args.lr}, Workers: {args.workers}")
-    print(f"[DEIMv2] Wagi danych:            Felix_data: {args.good_weight}x, Inne: {args.other_weight}x")
+    print(f"[DEIMv2] DEIMv2 root:            {DEIMV2_ROOT}")
+    print(f"[DEIMv2] Config:                 {config_path}")
+    print(f"[DEIMv2] Hyperparams:            Epochs: {args.epochs}, Batch: {args.batch_size}, LR: {args.lr}, Workers: {args.workers}")
+    print(f"[DEIMv2] Dataset weights:        Felix_data: {args.good_weight}x, Other: {args.other_weight}x")
 
     if args.smoke_test:
-        print("\n--- URUCHAMIANIE SMOKE TESTU JEDNEGO BATCHA ---")
+        print("\n--- RUNNING SINGLE BATCH SMOKE TEST ---")
         smoke_test(config_path, overrides)
-        print("\n[SUKCES] Smoke test zakończony pomyślnie!")
+        print("\n[SUCCESS] Smoke test completed successfully!")
         return
 
     output_ckpt_dir = RUNS_DIR
     best_weights_file = output_ckpt_dir / "best_stg1.pth"
     project_best_weights = MODELS_DIR / "ragwort_deimv2_best.pth"
 
-    # --- KROK 1: TRENING ---
+    # Step 1: Training
     if not args.skip_train and not args.evaluate:
         print("\n====================================================================")
-        print(" 2. ROZPOCZĘCIE TRENINGU DEIMv2")
+        print(" 2. STARTING DEIMv2 TRAINING")
         print("====================================================================")
         cmd = [sys.executable, "train.py", "--config", str(config_path), "--seed", "0"]
         if overrides:
             cmd.extend(("--update", *overrides))
-        print(f"[DEIMv2] Komenda: {' '.join(cmd)}")
+        print(f"[DEIMv2] Command: {' '.join(cmd)}")
         subprocess.run(cmd, cwd=DEIMV2_ROOT, check=True)
 
-        # Skopiowanie najlepszego checkpointu do katalogu models/
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
         chosen_ckpt = best_weights_file if best_weights_file.exists() else (output_ckpt_dir / "last.pth")
         if chosen_ckpt.exists():
             shutil.copy2(chosen_ckpt, project_best_weights)
-            print(f"\n[WAGI] Zapisano najlepsze wagi w: {project_best_weights}")
+            print(f"\n[Weights] Saved best weights to: {project_best_weights}")
 
-        # Eksport do model.pt
         try:
             export_model_pt(config_path, overrides)
         except Exception as e:
-            print(f"[OSTRZEŻENIE] Nie udało się automatycznie wyeksportować model.pt: {e}")
+            print(f"[Warning] Automatic export to model.pt failed: {e}")
 
-    # Wybór wag do ewaluacji
     active_weights = args.resume or (project_best_weights if project_best_weights.exists() else best_weights_file)
     if not active_weights or not Path(active_weights).exists():
         cand_last = output_ckpt_dir / "last.pth"
         if cand_last.exists():
             active_weights = cand_last
 
-    # --- KROK 2: WALIDACJA COCO ---
+    # Step 2: COCO validation
     print("\n====================================================================")
-    print(" 3. WALIDACJA COCO (mAP50, mAP50-95)")
+    print(" 3. COCO VALIDATION (mAP50, mAP50-95)")
     print("====================================================================")
     if active_weights and Path(active_weights).exists():
         val_cmd = [
@@ -728,20 +711,19 @@ def main() -> None:
         try:
             subprocess.run(val_cmd, cwd=DEIMV2_ROOT, check=True)
         except Exception as e:
-            print(f"[OSTRZEŻENIE] Walidacja COCO napotkała problem: {e}")
+            print(f"[Warning] COCO validation encountered an issue: {e}")
     else:
-        print("[OSTRZEŻENIE] Brak wytrenowanych wag do walidacji COCO.")
+        print("[Warning] No trained weights available for COCO validation.")
 
-    # --- KROK 3: EWALUACJA data_eval (IoU = 0.5) ---
+    # Step 3: Detection evaluation (IoU = 0.5)
     print("\n====================================================================")
-    print(" 4. EWALUACJA Z UŻYCIEM FUNKCJI data_eval (IoU = 0.5)")
+    print(" 4. EVALUATION WITH CUSTOM DETECTION METRICS (IoU = 0.5)")
     print("====================================================================")
     concat_dir = find_data_concat_dir()
     test_img_dir = concat_dir / "combined_dataset" / "test" / "images"
     test_lbl_dir = concat_dir / "combined_dataset" / "test" / "labels"
 
     if not (test_img_dir.exists() and test_lbl_dir.exists()):
-        # Sprawdź alternatywną ścieżkę data/combined_dataset
         alt_img_dir = PROJECT_ROOT / "data" / "combined_dataset" / "test" / "images"
         alt_lbl_dir = PROJECT_ROOT / "data" / "combined_dataset" / "test" / "labels"
         if alt_img_dir.exists() and alt_lbl_dir.exists():
@@ -760,24 +742,24 @@ def main() -> None:
                 conf_threshold=0.25,
             )
         except Exception as e:
-            print(f"[OSTRZEŻENIE] Ewaluacja data_eval napotkała błąd: {e}")
+            print(f"[Warning] Detection evaluation encountered an error: {e}")
     else:
-        print(f"[OSTRZEŻENIE] Katalog testowy {test_img_dir} nie istnieje - pomijanie ewaluacji data_eval.")
+        print(f"[Warning] Test directory {test_img_dir} does not exist - skipping custom evaluation.")
 
-    # --- KROK 4: TESTY ZEWNĘTRZNE ---
+    # Step 4: External image generalization test
     print("\n====================================================================")
-    print(" 5. TESTY NA NOWYCH ZDJĘCIACH Z INTERNETU")
+    print(" 5. EXTERNAL IMAGES GENERALIZATION TEST")
     print("====================================================================")
     try:
         if 'model' not in locals():
             model, postproc = load_deim_model(config_path, active_weights, device)
-        zewn = pobierz_zewnetrzne_zdjecia()
-        testuj_zewnetrzne_zdjecia_deim(model, postproc, device, zewn)
+        external_images = pobierz_zewnetrzne_zdjecia()
+        testuj_zewnetrzne_zdjecia_deim(model, postproc, device, external_images)
     except Exception as e:
-        print(f"[OSTRZEŻENIE] Testy zewnętrzne pominięte: {e}")
+        print(f"[Warning] External tests skipped: {e}")
 
     print("\n====================================================================")
-    print(" ZAKOŃCZONO CAŁY PROCES DINO/DEIM POMYŚLNIE!")
+    print(" DINO/DEIM PIPELINE COMPLETED SUCCESSFULLY!")
     print("====================================================================")
 
 

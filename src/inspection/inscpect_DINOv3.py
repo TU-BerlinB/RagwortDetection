@@ -1,3 +1,13 @@
+"""
+File: src/inspection/inscpect_DINOv3.py
+Usage:
+    python src/inspection/inscpect_DINOv3.py
+Description:
+    Inspects DINOv3 architecture, configuration, processor settings, token representations,
+    spatial features, and intermediate layer representations on a sample image,
+    exporting the detailed inspection report to a JSON file.
+"""
+
 import json
 from pathlib import Path
 
@@ -35,7 +45,6 @@ def analyze_spatial_features(
     Convert token representation [B, N, C] into spatial
     feature representation [B, C, H, W].
     """
-
     batch_size = hidden_state.shape[0]
     num_tokens = hidden_state.shape[1]
     embedding_dim = hidden_state.shape[2]
@@ -47,28 +56,14 @@ def analyze_spatial_features(
     if num_tokens < expected_patches:
         return None
 
-    # Take the patch tokens.
     patch_features = hidden_state[:, -expected_patches:, :]
 
-    # [B, N, C]
-    # ->
-    # [B, H, W, C]
     spatial_features = patch_features.reshape(
         batch_size,
         patches_h,
         patches_w,
         embedding_dim,
-    )
-
-    # [B, H, W, C]
-    # ->
-    # [B, C, H, W]
-    spatial_features = spatial_features.permute(
-        0,
-        3,
-        1,
-        2,
-    )
+    ).permute(0, 3, 1, 2)
 
     return {
         "patch_features": patch_features,
@@ -79,14 +74,9 @@ def analyze_spatial_features(
 
 
 def inspect_model(model, processor, image):
-
     print("\n" + "=" * 60)
     print("DINOv3 INSPECTION")
     print("=" * 60)
-
-    # ---------------------------------------------------------
-    # Model information
-    # ---------------------------------------------------------
 
     print("\n[MODEL]")
     print(f"Model: {MODEL_NAME}")
@@ -112,10 +102,6 @@ def inspect_model(model, processor, image):
         f"{trainable_parameters:,}"
     )
 
-    # ---------------------------------------------------------
-    # Configuration
-    # ---------------------------------------------------------
-
     config = model.config
 
     print("\n[CONFIG]")
@@ -135,25 +121,15 @@ def inspect_model(model, processor, image):
     config_data = {}
 
     for attribute in config_attributes:
-
         value = getattr(
             config,
             attribute,
             None,
         )
-
         config_data[attribute] = value
-
-        print(
-            f"{attribute}: {value}"
-        )
-
-    # ---------------------------------------------------------
-    # Processor information
-    # ---------------------------------------------------------
+        print(f"{attribute}: {value}")
 
     print("\n[PROCESSOR]")
-
     print(
         f"Processor type: "
         f"{type(processor).__name__}"
@@ -170,40 +146,18 @@ def inspect_model(model, processor, image):
         "image_mean",
         "image_std",
     ]:
-
         value = getattr(
             processor,
             attribute,
             None,
         )
-
-        # Convert special HuggingFace objects
-        # into strings so JSON can serialize them.
         processor_data[attribute] = str(value)
-
-        print(
-            f"{attribute}: {value}"
-        )
-
-    # ---------------------------------------------------------
-    # Image
-    # ---------------------------------------------------------
+        print(f"{attribute}: {value}")
 
     print("\n[INPUT IMAGE]")
-
-    print(
-        f"Path: {IMAGE_PATH}"
-    )
-
-    print(
-        f"Original image size: "
-        f"{image.size}"
-    )
-
-    print(
-        f"Image mode: "
-        f"{image.mode}"
-    )
+    print(f"Path: {IMAGE_PATH}")
+    print(f"Original image size: {image.size}")
+    print(f"Image mode: {image.mode}")
 
     inputs = processor(
         images=image,
@@ -214,10 +168,6 @@ def inspect_model(model, processor, image):
         f"Pixel values shape: "
         f"{list(inputs['pixel_values'].shape)}"
     )
-
-    # ---------------------------------------------------------
-    # Forward pass
-    # ---------------------------------------------------------
 
     device = next(
         model.parameters()
@@ -231,7 +181,6 @@ def inspect_model(model, processor, image):
     print("\n[FORWARD PASS]")
 
     with torch.no_grad():
-
         outputs = model(
             **inputs,
             output_hidden_states=True,
@@ -242,14 +191,9 @@ def inspect_model(model, processor, image):
         f"{type(outputs).__name__}"
     )
 
-    # ---------------------------------------------------------
-    # Output structure
-    # ---------------------------------------------------------
-
     print("\n[OUTPUT]")
 
     output_keys = []
-
     if hasattr(outputs, "keys"):
         output_keys = list(outputs.keys())
 
@@ -261,7 +205,6 @@ def inspect_model(model, processor, image):
     output_data = {}
 
     for key in output_keys:
-
         value = getattr(
             outputs,
             key,
@@ -269,34 +212,19 @@ def inspect_model(model, processor, image):
         )
 
         if torch.is_tensor(value):
-
             print(
                 f"{key}: "
                 f"{list(value.shape)}"
             )
-
-            output_data[key] = tensor_info(
-                value
-            )
-
+            output_data[key] = tensor_info(value)
         elif isinstance(value, tuple):
-
             print(
-                f"{key}: "
-                f"tuple with "
-                f"{len(value)} elements"
+                f"{key}: tuple with {len(value)} elements"
             )
-
         elif value is not None:
-
             print(
-                f"{key}: "
-                f"{type(value).__name__}"
+                f"{key}: {type(value).__name__}"
             )
-
-    # ---------------------------------------------------------
-    # Last hidden state
-    # ---------------------------------------------------------
 
     print("\n[LAST HIDDEN STATE]")
 
@@ -307,131 +235,50 @@ def inspect_model(model, processor, image):
     )
 
     if last_hidden_state is not None:
-
         print(
-            f"Shape: "
-            f"{list(last_hidden_state.shape)}"
+            f"Shape: {list(last_hidden_state.shape)}"
         )
+        batch_size = last_hidden_state.shape[0]
+        num_tokens = last_hidden_state.shape[1]
+        embedding_dim = last_hidden_state.shape[2]
 
-        batch_size = (
-            last_hidden_state.shape[0]
-        )
-
-        num_tokens = (
-            last_hidden_state.shape[1]
-        )
-
-        embedding_dim = (
-            last_hidden_state.shape[2]
-        )
-
-        print(
-            f"Batch size: "
-            f"{batch_size}"
-        )
-
-        print(
-            f"Number of tokens: "
-            f"{num_tokens}"
-        )
-
-        print(
-            f"Embedding dimension: "
-            f"{embedding_dim}"
-        )
-
+        print(f"Batch size: {batch_size}")
+        print(f"Number of tokens: {num_tokens}")
+        print(f"Embedding dimension: {embedding_dim}")
     else:
-
-        print(
-            "last_hidden_state "
-            "not available."
-        )
-
+        print("last_hidden_state not available.")
         batch_size = None
         num_tokens = None
         embedding_dim = None
 
-    # ---------------------------------------------------------
-    # Token analysis
-    # ---------------------------------------------------------
-
     print("\n[TOKEN ANALYSIS]")
 
     token_data = {}
-
-    image_size = config_data.get(
-        "image_size"
-    )
-
-    patch_size = config_data.get(
-        "patch_size"
-    )
+    image_size = config_data.get("image_size")
+    patch_size = config_data.get("patch_size")
 
     if last_hidden_state is not None:
+        token_data["total_tokens"] = num_tokens
+        token_data["embedding_dimension"] = embedding_dim
 
-        token_data["total_tokens"] = (
-            num_tokens
-        )
-
-        token_data[
-            "embedding_dimension"
-        ] = embedding_dim
-
-        if (
-            image_size is not None
-            and patch_size is not None
-        ):
-
-            patches_h = (
-                image_size // patch_size
-            )
-
-            patches_w = (
-                image_size // patch_size
-            )
-
-            expected_patches = (
-                patches_h * patches_w
-            )
+        if image_size is not None and patch_size is not None:
+            patches_h = image_size // patch_size
+            patches_w = image_size // patch_size
+            expected_patches = patches_h * patches_w
 
             print(
-                f"Expected patch grid: "
-                f"{patches_h} × {patches_w}"
+                f"Expected patch grid: {patches_h} × {patches_w}"
             )
-
             print(
-                f"Expected number of patches: "
-                f"{expected_patches}"
+                f"Expected number of patches: {expected_patches}"
             )
 
-            token_data[
-                "patch_grid"
-            ] = [
-                patches_h,
-                patches_w,
-            ]
+            token_data["patch_grid"] = [patches_h, patches_w]
+            token_data["expected_patches"] = expected_patches
 
-            token_data[
-                "expected_patches"
-            ] = expected_patches
-
-            special_tokens = (
-                num_tokens
-                - expected_patches
-            )
-
-            print(
-                f"Special tokens: "
-                f"{special_tokens}"
-            )
-
-            token_data[
-                "special_tokens"
-            ] = special_tokens
-
-    # ---------------------------------------------------------
-    # Patch features - final layer
-    # ---------------------------------------------------------
+            special_tokens = num_tokens - expected_patches
+            print(f"Special tokens: {special_tokens}")
+            token_data["special_tokens"] = special_tokens
 
     print("\n[PATCH FEATURES - FINAL LAYER]")
 
@@ -442,7 +289,6 @@ def inspect_model(model, processor, image):
         and image_size is not None
         and patch_size is not None
     ):
-
         spatial_data = analyze_spatial_features(
             last_hidden_state,
             image_size,
@@ -450,27 +296,16 @@ def inspect_model(model, processor, image):
         )
 
         if spatial_data is not None:
-
             print(
-                f"Patch features shape: "
-                f"{spatial_data['patch_shape']}"
+                f"Patch features shape: {spatial_data['patch_shape']}"
             )
-
             print(
-                f"Spatial feature map shape: "
-                f"{spatial_data['spatial_shape']}"
+                f"Spatial feature map shape: {spatial_data['spatial_shape']}"
             )
-
             patch_data = {
-                "patch_shape":
-                    spatial_data["patch_shape"],
-                "spatial_shape":
-                    spatial_data["spatial_shape"],
+                "patch_shape": spatial_data["patch_shape"],
+                "spatial_shape": spatial_data["spatial_shape"],
             }
-
-    # ---------------------------------------------------------
-    # Intermediate layers
-    # ---------------------------------------------------------
 
     print("\n" + "=" * 60)
     print("INTERMEDIATE LAYERS")
@@ -485,159 +320,65 @@ def inspect_model(model, processor, image):
     intermediate_data = {}
 
     if hidden_states is None:
-
-        print(
-            "Hidden states are not available."
-        )
-
+        print("Hidden states are not available.")
     else:
+        print(f"Number of hidden states: {len(hidden_states)}")
 
-        print(
-            f"Number of hidden states: "
-            f"{len(hidden_states)}"
-        )
-
-        for index, hidden_state in enumerate(
-            hidden_states
-        ):
-
-            # HuggingFace usually returns:
-            #
-            # hidden_states[0]
-            #     embeddings before transformer
-            #
-            # hidden_states[1]
-            #     after transformer block 1
-            #
-            # ...
-            #
-            # hidden_states[12]
-            #     after transformer block 12
-
+        for index, hidden_state in enumerate(hidden_states):
             if index == 0:
-                layer_name = (
-                    "embedding_output"
-                )
+                layer_name = "embedding_output"
             else:
-                layer_name = (
-                    f"layer_{index}"
-                )
+                layer_name = f"layer_{index}"
 
             print("\n" + "-" * 50)
-
-            print(
-                f"{layer_name}"
-            )
-
-            print(
-                f"Token shape: "
-                f"{list(hidden_state.shape)}"
-            )
+            print(f"{layer_name}")
+            print(f"Token shape: {list(hidden_state.shape)}")
 
             layer_info = {
-                "token_shape":
-                    list(hidden_state.shape),
+                "token_shape": list(hidden_state.shape),
             }
 
-            # Analyze spatial representation.
-            if (
-                image_size is not None
-                and patch_size is not None
-            ):
-
-                spatial_data = (
-                    analyze_spatial_features(
-                        hidden_state,
-                        image_size,
-                        patch_size,
-                    )
+            if image_size is not None and patch_size is not None:
+                spatial_data = analyze_spatial_features(
+                    hidden_state,
+                    image_size,
+                    patch_size,
                 )
-
                 if spatial_data is not None:
+                    print(f"Patch shape: {spatial_data['patch_shape']}")
+                    print(f"Spatial shape: {spatial_data['spatial_shape']}")
+                    layer_info["patch_shape"] = spatial_data["patch_shape"]
+                    layer_info["spatial_shape"] = spatial_data["spatial_shape"]
 
-                    print(
-                        f"Patch shape: "
-                        f"{spatial_data['patch_shape']}"
-                    )
-
-                    print(
-                        f"Spatial shape: "
-                        f"{spatial_data['spatial_shape']}"
-                    )
-
-                    layer_info[
-                        "patch_shape"
-                    ] = spatial_data[
-                        "patch_shape"
-                    ]
-
-                    layer_info[
-                        "spatial_shape"
-                    ] = spatial_data[
-                        "spatial_shape"
-                    ]
-
-            intermediate_data[
-                layer_name
-            ] = layer_info
-
-    # ---------------------------------------------------------
-    # Final report
-    # ---------------------------------------------------------
+            intermediate_data[layer_name] = layer_info
 
     report = {
         "model": MODEL_NAME,
-
         "parameters": {
             "total": total_parameters,
             "trainable": trainable_parameters,
         },
-
         "config": config_data,
-
         "processor": processor_data,
-
         "input": {
             "image_path": IMAGE_PATH,
-            "original_size": list(
-                image.size
-            ),
+            "original_size": list(image.size),
             "mode": image.mode,
-            "pixel_values_shape": list(
-                inputs[
-                    "pixel_values"
-                ].shape
-            ),
+            "pixel_values_shape": list(inputs["pixel_values"].shape),
         },
-
         "outputs": output_data,
-
         "tokens": token_data,
-
         "patch_features": patch_data,
-
-        "intermediate_layers":
-            intermediate_data,
+        "intermediate_layers": intermediate_data,
     }
 
-    # ---------------------------------------------------------
-    # Save report
-    # ---------------------------------------------------------
-
-    report_path = Path(
-        REPORT_PATH
-    )
-
+    report_path = Path(REPORT_PATH)
     report_path.parent.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    with open(
-        report_path,
-        "w",
-    ) as file:
-
+    with open(report_path, "w") as file:
         json.dump(
             report,
             file,
@@ -647,45 +388,24 @@ def inspect_model(model, processor, image):
     print("\n" + "=" * 60)
     print("REPORT SAVED")
     print("=" * 60)
-
-    print(
-        REPORT_PATH
-    )
+    print(REPORT_PATH)
 
 
 def main():
-
     device = (
         "cuda"
         if torch.cuda.is_available()
         else "cpu"
     )
 
-    print(
-        f"Using device: {device}"
-    )
+    print(f"Using device: {device}")
+    print(f"Loading model: {MODEL_NAME}")
 
-    print(
-        f"Loading model: "
-        f"{MODEL_NAME}"
-    )
-
-    processor = (
-        AutoImageProcessor.from_pretrained(
-            MODEL_NAME
-        )
-    )
-
-    model = AutoModel.from_pretrained(
-        MODEL_NAME
-    ).to(device)
-
+    processor = AutoImageProcessor.from_pretrained(MODEL_NAME)
+    model = AutoModel.from_pretrained(MODEL_NAME).to(device)
     model.eval()
 
-    image = (
-        Image.open(IMAGE_PATH)
-        .convert("RGB")
-    )
+    image = Image.open(IMAGE_PATH).convert("RGB")
 
     inspect_model(
         model=model,

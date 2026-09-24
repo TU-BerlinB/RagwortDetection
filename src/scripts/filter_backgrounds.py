@@ -1,25 +1,27 @@
+"""
+File: src/scripts/filter_backgrounds.py
+Usage:
+    python src/scripts/filter_backgrounds.py
+Description:
+    Filters background landscape images using SigLIP zero-shot vision-language embeddings,
+    scoring candidate images against positive (wide meadow/field) and negative (macro/close-up)
+    prompts, separating them into accepted and rejected directories.
+"""
+
 from pathlib import Path
 import shutil
 
-import torch
 import pandas as pd
+import torch
 from PIL import Image
 from tqdm import tqdm
-from transformers import AutoProcessor, AutoModel
-
-
-# ============================================================
-# CONFIG
-# ============================================================
+from transformers import AutoModel, AutoProcessor
 
 INPUT_DIR = Path("data/backgrounds")
-
 OUTPUT_ACCEPTED = INPUT_DIR / "accepted"
 OUTPUT_REJECTED = INPUT_DIR / "rejected"
 
 MODEL_NAME = "google/siglip-base-patch16-224"
-
-# Im wyższy próg, tym bardziej rygorystyczny filtr.
 THRESHOLD = 0.00
 
 IMAGE_EXTENSIONS = {
@@ -29,7 +31,7 @@ IMAGE_EXTENSIONS = {
     ".webp",
 }
 
-# Zdjęcia, które chcemy zachować
+# Positive prompts describing desired wide landscape images
 POSITIVE_PROMPTS = [
     "a wide photograph of a meadow",
     "a wide photograph of a grass field",
@@ -40,10 +42,10 @@ POSITIVE_PROMPTS = [
     "a wide outdoor field with grass",
     "a natural grassland landscape",
     "a photograph of a field with grass",
-    "a photograph of a soil with plants"
+    "a photograph of a soil with plants",
 ]
 
-# Zdjęcia, które chcemy odrzucać
+# Negative prompts describing undesirable close-ups and insects
 NEGATIVE_PROMPTS = [
     "a close-up photograph of grass",
     "a macro photograph of grass",
@@ -54,43 +56,17 @@ NEGATIVE_PROMPTS = [
     "a close-up of grass blades",
     "a macro photograph of leaves",
     "a plant filling almost the entire image",
-    "wasp, bees, butterfly, moth"
+    "wasp, bees, butterfly, moth",
 ]
 
 
-# ============================================================
-# MODEL
-# ============================================================
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-
-print(f"Device: {device}")
-print(f"Loading model: {MODEL_NAME}")
-
-processor = AutoProcessor.from_pretrained(MODEL_NAME)
-model = AutoModel.from_pretrained(MODEL_NAME)
-
-model = model.to(device)
-model.eval()
-
-print("Model loaded.")
-
-
-# ============================================================
-# PROMPT EMBEDDINGS
-# ============================================================
-
-def get_text_embeddings(prompts):
+def get_text_embeddings(processor, model, device, prompts):
     inputs = processor(
         text=prompts,
         padding="max_length",
         return_tensors="pt",
     )
-
-    inputs = {
-        key: value.to(device)
-        for key, value in inputs.items()
-    }
+    inputs = {key: value.to(device) for key, value in inputs.items()}
 
     with torch.no_grad():
         outputs = model.get_text_features(**inputs)
@@ -100,43 +76,17 @@ def get_text_embeddings(prompts):
     else:
         embeddings = outputs
 
-    embeddings = embeddings / embeddings.norm(
-        dim=-1,
-        keepdim=True
-    )
-
+    embeddings = embeddings / embeddings.norm(dim=-1, keepdim=True)
     return embeddings
 
-print("Calculating text embeddings...")
 
-positive_embeddings = get_text_embeddings(POSITIVE_PROMPTS)
-negative_embeddings = get_text_embeddings(NEGATIVE_PROMPTS)
-
-print("Text embeddings ready.")
-
-
-# ============================================================
-# IMAGE SCORING
-# ============================================================
-
-def calculate_score(image):
-    """
-    Returns:
-
-        positive_score
-        negative_score
-        margin
-    """
-
+def calculate_score(processor, model, device, image, positive_embeddings, negative_embeddings):
+    """Calculate positive score, negative score, and margin (positive - negative)."""
     inputs = processor(
         images=image,
         return_tensors="pt",
     )
-
-    inputs = {
-        key: value.to(device)
-        for key, value in inputs.items()
-    }
+    inputs = {key: value.to(device) for key, value in inputs.items()}
 
     with torch.no_grad():
         outputs = model.get_image_features(**inputs)
@@ -146,191 +96,114 @@ def calculate_score(image):
     else:
         image_embedding = outputs
 
-    image_embedding = image_embedding / image_embedding.norm(
-        dim=-1,
-        keepdim=True
-    )
+    image_embedding = image_embedding / image_embedding.norm(dim=-1, keepdim=True)
 
-    positive_scores = (
-        image_embedding @ positive_embeddings.T
-    )[0]
-
-    negative_scores = (
-        image_embedding @ negative_embeddings.T
-    )[0]
+    positive_scores = (image_embedding @ positive_embeddings.T)[0]
+    negative_scores = (image_embedding @ negative_embeddings.T)[0]
 
     positive_score = positive_scores.mean().item()
     negative_score = negative_scores.mean().item()
-
     margin = positive_score - negative_score
 
-    return (
-        positive_score,
-        negative_score,
-        margin
-    )
+    return positive_score, negative_score, margin
 
-
-# ============================================================
-# FILES
-# ============================================================
 
 def get_images():
-
     images = []
-
     for path in INPUT_DIR.rglob("*"):
-
-        # Don't process output directories
-        if (
-            OUTPUT_ACCEPTED in path.parents
-            or OUTPUT_REJECTED in path.parents
-        ):
+        if OUTPUT_ACCEPTED in path.parents or OUTPUT_REJECTED in path.parents:
             continue
-
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
             images.append(path)
-
     return images
 
 
-images = get_images()
+def main():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device}")
+    print(f"Loading model: {MODEL_NAME}")
 
-print()
-print(f"Found {len(images)} images.")
-print()
+    processor = AutoProcessor.from_pretrained(MODEL_NAME)
+    model = AutoModel.from_pretrained(MODEL_NAME).to(device)
+    model.eval()
 
+    positive_embeddings = get_text_embeddings(processor, model, device, POSITIVE_PROMPTS)
+    negative_embeddings = get_text_embeddings(processor, model, device, NEGATIVE_PROMPTS)
 
-# ============================================================
-# OUTPUT DIRECTORIES
-# ============================================================
+    images = get_images()
+    print(f"\nFound {len(images)} images to filter.")
 
-OUTPUT_ACCEPTED.mkdir(
-    parents=True,
-    exist_ok=True
-)
+    OUTPUT_ACCEPTED.mkdir(parents=True, exist_ok=True)
+    OUTPUT_REJECTED.mkdir(parents=True, exist_ok=True)
 
-OUTPUT_REJECTED.mkdir(
-    parents=True,
-    exist_ok=True
-)
+    results = []
+    accepted_count = 0
+    rejected_count = 0
 
-
-# ============================================================
-# FILTER
-# ============================================================
-
-results = []
-
-accepted_count = 0
-rejected_count = 0
-
-
-for image_path in tqdm(images, desc="Filtering images"):
-
-    try:
-
-        image = Image.open(image_path).convert("RGB")
-
-        width, height = image.size
-
-        positive_score, negative_score, margin = (
-            calculate_score(image)
-        )
-
-        accepted = margin >= THRESHOLD
-
-        # Preserve original category
+    for image_path in tqdm(images, desc="Filtering images"):
         try:
-            relative_path = image_path.relative_to(INPUT_DIR)
-        except ValueError:
-            relative_path = Path(image_path.name)
+            image = Image.open(image_path).convert("RGB")
+            width, height = image.size
 
-        if accepted:
+            positive_score, negative_score, margin = calculate_score(
+                processor, model, device, image, positive_embeddings, negative_embeddings
+            )
+            accepted = margin >= THRESHOLD
 
-            destination = OUTPUT_ACCEPTED / relative_path
-            accepted_count += 1
+            try:
+                relative_path = image_path.relative_to(INPUT_DIR)
+            except ValueError:
+                relative_path = Path(image_path.name)
 
-        else:
+            if accepted:
+                destination = OUTPUT_ACCEPTED / relative_path
+                accepted_count += 1
+            else:
+                destination = OUTPUT_REJECTED / relative_path
+                rejected_count += 1
 
-            destination = OUTPUT_REJECTED / relative_path
-            rejected_count += 1
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(image_path, destination)
 
-        destination.parent.mkdir(
-            parents=True,
-            exist_ok=True
-        )
+            results.append({
+                "file": str(image_path),
+                "width": width,
+                "height": height,
+                "positive_score": positive_score,
+                "negative_score": negative_score,
+                "margin": margin,
+                "threshold": THRESHOLD,
+                "status": "accepted" if accepted else "rejected",
+            })
+        except Exception as e:
+            print(f"\nError processing {image_path}: {e}")
+            results.append({
+                "file": str(image_path),
+                "width": None,
+                "height": None,
+                "positive_score": None,
+                "negative_score": None,
+                "margin": None,
+                "threshold": THRESHOLD,
+                "status": "error",
+            })
 
-        shutil.copy2(
-            image_path,
-            destination
-        )
+    df = pd.DataFrame(results)
+    csv_path = INPUT_DIR / "filter_results.csv"
+    df.to_csv(csv_path, index=False)
 
-        results.append({
-            "file": str(image_path),
-            "width": width,
-            "height": height,
-            "positive_score": positive_score,
-            "negative_score": negative_score,
-            "margin": margin,
-            "threshold": THRESHOLD,
-            "status": "accepted" if accepted else "rejected",
-        })
-
-    except Exception as e:
-
-        print(
-            f"\nERROR processing {image_path}: {e}"
-        )
-
-        results.append({
-            "file": str(image_path),
-            "width": None,
-            "height": None,
-            "positive_score": None,
-            "negative_score": None,
-            "margin": None,
-            "threshold": THRESHOLD,
-            "status": "error",
-        })
-
-
-# ============================================================
-# SAVE RESULTS
-# ============================================================
-
-df = pd.DataFrame(results)
-
-csv_path = INPUT_DIR / "filter_results.csv"
-
-df.to_csv(
-    csv_path,
-    index=False
-)
+    print("\n" + "=" * 60)
+    print("FILTER FINISHED")
+    print("=" * 60)
+    print(f"Total images:     {len(images)}")
+    print(f"Accepted:         {accepted_count}")
+    print(f"Rejected:         {rejected_count}")
+    if len(images) > 0:
+        print(f"Accepted ratio:   {accepted_count / len(images) * 100:.1f}%")
+    print(f"Accepted images:  {OUTPUT_ACCEPTED}")
+    print(f"Rejected images:  {OUTPUT_REJECTED}")
+    print(f"Results CSV:      {csv_path}\n")
 
 
-# ============================================================
-# SUMMARY
-# ============================================================
-
-print()
-print("=" * 60)
-print("FILTER FINISHED")
-print("=" * 60)
-
-print(f"Total images:     {len(images)}")
-print(f"Accepted:         {accepted_count}")
-print(f"Rejected:         {rejected_count}")
-
-if len(images) > 0:
-
-    print(
-        f"Accepted ratio:   "
-        f"{accepted_count / len(images) * 100:.1f}%"
-    )
-
-print()
-print(f"Accepted images:  {OUTPUT_ACCEPTED}")
-print(f"Rejected images:  {OUTPUT_REJECTED}")
-print(f"Results CSV:      {csv_path}")
-print()
+if __name__ == "__main__":
+    main()

@@ -1,8 +1,12 @@
 """
-deim.py
-
-Wrapper dla modelu detekcji DEIMv2 (DINOv3 + DEIM Transformer).
-Zapewnia interfejs kompatybilny z pipeline'em YOLOv8 i aplikacją webową.
+File: src/models/deim.py
+Usage:
+    from src.models.deim import DEIMModel
+    model = DEIMModel("outputs/models/model.pt")
+    results = model.predict("path/to/image.jpg", conf=0.25)
+Description:
+    Wrapper for DEIMv2 (DINOv3 + DEIM Transformer) object detection model,
+    providing an interface compatible with YOLOv8 predictions and web application pipelines.
 """
 
 from __future__ import annotations
@@ -24,12 +28,16 @@ DEIMV2_ROOT = REPO_ROOT.parent / "DEIMv2"
 if str(DEIMV2_ROOT) not in sys.path:
     sys.path.insert(0, str(DEIMV2_ROOT))
 
-from engine.core.workspace import create
-from engine.core.yaml_utils import merge_config
+try:
+    from engine.core.workspace import create
+    from engine.core.yaml_utils import merge_config
+except ImportError:
+    create = None
+    merge_config = None
 
 
 class DEIMBoxes:
-    """Wrapper dla ramek detekcji emulujący strukturę ultralytics Boxes."""
+    """Detection bounding boxes wrapper emulating the ultralytics Boxes interface."""
 
     def __init__(self, xyxy: torch.Tensor, conf: torch.Tensor, cls: torch.Tensor):
         self.xyxy = xyxy
@@ -44,7 +52,7 @@ class DEIMBoxes:
 
 
 class DEIMResult:
-    """Wynik pojedynczej predykcji emulujący interfejs Results z ultralytics."""
+    """Single prediction result emulating the ultralytics Results interface."""
 
     def __init__(
         self,
@@ -59,15 +67,18 @@ class DEIMResult:
 
 
 class DEIMModel:
-    """
-    Wrapper dla modelu DEIMv2 + DINOv3.
-    """
+    """Wrapper for DEIMv2 + DINOv3 detection model."""
 
     def __init__(
         self,
         weights_path: Union[str, Path] = "outputs/models/model.pt",
         device: Optional[str] = None,
     ):
+        if create is None or merge_config is None:
+            raise ImportError(
+                "DEIMv2 workspace modules not found. Ensure DEIMv2 repository is available in sys.path."
+            )
+
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         wp = Path(weights_path)
         if not wp.is_absolute():
@@ -87,16 +98,14 @@ class DEIMModel:
             self.weights_path = wp
 
         if not self.weights_path.exists():
-            raise FileNotFoundError(f"Nie znaleziono wag DEIM: {self.weights_path}")
+            raise FileNotFoundError(f"DEIM weights not found: {self.weights_path}")
 
-        print(f"[DEIM] Ładowanie wag DEIMv2 + DINOv3 z {self.weights_path} na {self.device}...")
+        print(f"[DEIM] Loading DEIMv2 + DINOv3 weights from {self.weights_path} to {self.device}...")
 
-        # Załadowanie checkpointu
         data = torch.load(self.weights_path, map_location="cpu")
         cfg = data["config"]
         global_cfg = merge_config(cfg, inplace=False, overwrite=False)
 
-        # Inicjalizacja modelu i postprocessora
         self.model = create(cfg["model"], global_cfg)
         self.model.load_state_dict(data["model_state_dict"])
         self.model.to(self.device)
@@ -110,13 +119,13 @@ class DEIMModel:
         self.task = "detect"
         self.model_weight = str(self.weights_path)
 
-        # Transformacje wejściowe standardowe dla ViT / DEIM
+        # Standard ViT / DEIM input normalization transforms
         self.preprocess = transforms.Compose([
             transforms.Resize((640, 640)),
             transforms.ToTensor(),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ])
-        print(f"[DEIM] Model DEIMv2 gotowy do pracy! Klasy: {self.names}")
+        print(f"[DEIM] DEIMv2 model initialized. Classes: {self.names}")
 
     def predict(
         self,
@@ -126,25 +135,21 @@ class DEIMModel:
         verbose: bool = False,
         **kwargs: Any,
     ) -> List[DEIMResult]:
-        """
-        Wykonuje predykcję na obrazie i zwraca listę DEIMResult.
-        """
-        # Przygotowanie obrazu PIL i odczyt wymiarów
+        """Run inference on an input image and return a list of DEIMResult objects."""
         if isinstance(source, (str, Path)):
             img_path = Path(source)
             if not img_path.exists():
-                raise FileNotFoundError(f"Nie znaleziono pliku: {img_path}")
+                raise FileNotFoundError(f"Image file not found: {img_path}")
             pil_img = Image.open(img_path).convert("RGB")
         elif isinstance(source, Image.Image):
             pil_img = source.convert("RGB")
         elif isinstance(source, np.ndarray):
-            # OpenCV BGR -> RGB
             if len(source.shape) == 3 and source.shape[2] == 3:
                 pil_img = Image.fromarray(cv2.cvtColor(source, cv2.COLOR_BGR2RGB))
             else:
                 pil_img = Image.fromarray(source)
         else:
-            raise TypeError(f"Nieobsługiwany typ źródła obrazu: {type(source)}")
+            raise TypeError(f"Unsupported image source type: {type(source)}")
 
         w, h = pil_img.size
         orig_size = torch.tensor([[h, w]], device=self.device)
@@ -184,7 +189,7 @@ class DEIMModel:
         )
 
         if verbose:
-            print(f"[DEIM] Wykryto {len(final_boxes)} obiektów (conf >= {conf})")
+            print(f"[DEIM] Detected {len(final_boxes)} objects (conf >= {conf})")
 
         return [result]
 

@@ -1,41 +1,13 @@
 """
-Wybor reprezentatywnych zdjec metoda facility location (greedy k-center) na embeddingach DINO.
-
-KOMENDY - caly ten blok mozna wkleic do konsoli w /workspace, linie z # sa ignorowane:
-
-# 1. sam skan danych, bez modelu (szybki test, ze sciezki sie zgadzaja):
-python src/scripts/select_representative.py --dry-run
-
-# 2. szybki test na 40 zdjeciach (sprawdza, czy model sie w ogole laduje):
-python src/scripts/select_representative.py --limit 40 --n-select 10
-
-# 3. wlasciwy przebieg na data/combined_dataset/train:
-python src/scripts/select_representative.py --n-select 150
-
-# 4. train + test + 1000 negatywow z data/plants, po rowno miedzy klasy:
-python src/scripts/select_representative.py --split all --extra-dir data/plants --n-select 200 --equal-classes
-
-# 5. to samo + kopie wybranych zdjec do outputs/selected_images/:
-python src/scripts/select_representative.py --n-select 150 --copy-images
-
-# 6. wymuszenie przeliczenia embeddingow (domyslnie brane z cache'u):
-python src/scripts/select_representative.py --n-select 150 --recompute
-
-MODEL: domyslnie skrypt probuje DINOv3, a gdy repo jest zamkniete (blad 401 / gated repo),
-automatycznie przechodzi na publiczne facebook/dinov2-small. Zeby wymusic konkretny model:
-python src/scripts/select_representative.py --model facebook/dinov2-base --n-select 150
-
-# DOSTEP DO DINOv3 (opcjonalny) - najpierw kliknij "Agree and access repository" na
-# https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m , potem w kontenerze:
-pip install -U huggingface_hub
-hf auth login          # starsze wersje: huggingface-cli login
-# albo bez logowania:  export HF_TOKEN=hf_twoj_token
-
-WEJSCIE:  data/combined_dataset/<split>/images + /labels   (nazwy klas z data.yaml)
-WYJSCIE:  outputs/embeddings_combined_<split>.npz          cache embeddingow
-          outputs/selected_representative.csv              lista zdjec do adnotacji
-          outputs/selection_summary.json                   parametry + statystyki
-          outputs/selected_images/<klasa>/                 tylko z --copy-images
+File: src/scripts/select_representative.py
+Usage:
+    python src/scripts/select_representative.py --dry-run
+    python src/scripts/select_representative.py --n-select 150
+    python src/scripts/select_representative.py --split all --extra-dir data/plants --n-select 200 --equal-classes
+    python src/scripts/select_representative.py --n-select 150 --copy-images
+Description:
+    Selects a representative subset of images for annotation using facility location
+    (greedy k-center) algorithm applied to DINOv3 / DINOv2 vision transformer embeddings.
 """
 
 from __future__ import annotations
@@ -78,11 +50,11 @@ MODEL_CANDIDATES = [
 ]
 
 HF_HINT = (
-    "Model DINOv3 jest zamkniety (gated). Zeby go uzyc:\n"
-    "  1) wejdz na https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m\n"
-    "     i kliknij 'Agree and access repository'\n"
-    "  2) w kontenerze:  pip install -U huggingface_hub  &&  hf auth login\n"
-    "     (albo: export HF_TOKEN=hf_twoj_token)"
+    "Model DINOv3 is gated. To access it:\n"
+    "  1) Visit https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m\n"
+    "     and click 'Agree and access repository'\n"
+    "  2) Authenticate: pip install -U huggingface_hub && hf auth login\n"
+    "     (or: export HF_TOKEN=hf_your_token)"
 )
 
 
@@ -114,9 +86,9 @@ def load_ragwort_class_ids(data_dir: Path) -> Set[int]:
                 raw = [raw[k] for k in sorted(raw, key=int)]
             names = [str(n) for n in raw]
         except ImportError:
-            print("[uwaga] brak pyyaml -> zakladam, ze klasa 0 to starzec")
+            print("[notice] pyyaml not found; assuming class 0 is ragwort")
         except Exception as exc:
-            print(f"[uwaga] nie udalo sie wczytac {yaml_path}: {exc}")
+            print(f"[notice] failed loading {yaml_path}: {exc}")
 
     ids = {i for i, n in enumerate(names) if n.strip().lower() in RAGWORT_SYNONYMS}
     return ids or {0}
@@ -148,24 +120,24 @@ def collect_samples(data_dir: Path, splits: Sequence[str]) -> List[Sample]:
         labels_dir = data_dir / split / "labels"
 
         if not images_dir.exists():
-            print(f"[uwaga] pomijam '{split}' - brak {images_dir}")
+            print(f"[notice] Skipping split '{split}' - missing {images_dir}")
             continue
 
         paths = sorted(p for p in images_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES)
         for img in paths:
             samples.append(Sample(img, label_of_image(labels_dir / (img.stem + ".txt"), ragwort_ids)))
-        print(f"[skan] {split}: {len(paths)} zdjec (ID klas starca: {sorted(ragwort_ids)})")
+        print(f"[scan] {split}: {len(paths)} images (ragwort class IDs: {sorted(ragwort_ids)})")
 
     return samples
 
 
 def collect_extra_dir(extra_dir: Path, label: str) -> List[Sample]:
     if not extra_dir.exists():
-        print(f"[uwaga] pomijam --extra-dir - brak {extra_dir}")
+        print(f"[notice] Skipping --extra-dir - missing {extra_dir}")
         return []
 
     paths = sorted(p for p in extra_dir.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES)
-    print(f"[skan] {extra_dir}: {len(paths)} zdjec jako '{label}'")
+    print(f"[scan] {extra_dir}: {len(paths)} images as '{label}'")
     return [Sample(p, label) for p in paths]
 
 
@@ -175,12 +147,15 @@ def subsample(samples: List[Sample], limit: int) -> List[Sample]:
 
     step = len(samples) / limit
     picked = [samples[min(len(samples) - 1, int(i * step))] for i in range(limit)]
-    print(f"[limit] biore {len(picked)} z {len(samples)} zdjec (co ~{step:.1f}-te)")
+    print(f"[limit] Selecting {len(picked)} of {len(samples)} images")
     return picked
 
 
 def load_backbone(model_name: str | None):
-    from models.dinov3 import DINOv3
+    try:
+        from src.models.dinov3 import DINOv3
+    except ImportError:
+        from models.dinov3 import DINOv3
 
     if model_name:
         return DINOv3(model_name=model_name), model_name
@@ -188,15 +163,15 @@ def load_backbone(model_name: str | None):
     last_error = None
     for candidate in MODEL_CANDIDATES:
         try:
-            print(f"[model] probuje: {candidate}")
+            print(f"[model] Trying: {candidate}")
             return DINOv3(model_name=candidate), candidate
         except Exception as exc:
             last_error = exc
-            print(f"[model] {candidate} niedostepny ({type(exc).__name__}) -> probuje nastepny")
+            print(f"[model] {candidate} unavailable ({type(exc).__name__}) -> trying fallback")
             if candidate.startswith("facebook/dinov3"):
                 print(HF_HINT)
 
-    raise SystemExit(f"Blad: nie udalo sie zaladowac zadnego modelu. Ostatni blad: {last_error}")
+    raise SystemExit(f"Error: failed loading vision backbone. Last error: {last_error}")
 
 
 def compute_embeddings(samples: List[Sample], batch_size: int, model_name: str | None) -> Tuple[np.ndarray, str]:
@@ -205,10 +180,10 @@ def compute_embeddings(samples: List[Sample], batch_size: int, model_name: str |
     from tqdm import tqdm
 
     model, used_name = load_backbone(model_name)
-    print(f"[model] uzywam {used_name} na: {model.device}")
+    print(f"[model] Using {used_name} on: {model.device}")
 
     vectors: List[np.ndarray] = []
-    for start in tqdm(range(0, len(samples), batch_size), desc="Embeddingi"):
+    for start in tqdm(range(0, len(samples), batch_size), desc="Embeddings"):
         batch = samples[start : start + batch_size]
         images = [Image.open(s.path).convert("RGB") for s in batch]
 
@@ -234,9 +209,9 @@ def load_or_compute_embeddings(
         same_model = model_name is None or cached_model == model_name
 
         if same_files and same_model:
-            print(f"[cache] wczytuje embeddingi z {cache_path} (model: {cached_model})")
+            print(f"[cache] Loading embeddings from {cache_path} (model: {cached_model})")
             return cached["embeddings"].astype(np.float32), cached_model
-        print("[cache] zmienila sie lista plikow albo model -> liczenie od nowa")
+        print("[cache] File list or model changed; recomputing embeddings")
 
     embeddings, used_name = compute_embeddings(samples, batch_size, model_name)
 
@@ -248,7 +223,7 @@ def load_or_compute_embeddings(
         labels=np.array([s.label for s in samples]),
         model=np.array(used_name),
     )
-    print(f"[cache] zapisano {cache_path} (ksztalt: {embeddings.shape})")
+    print(f"[cache] Saved {cache_path} (shape: {embeddings.shape})")
 
     return embeddings, used_name
 
@@ -323,18 +298,18 @@ def copy_selected(rows: List[dict], target_dir: Path) -> None:
         dest_dir = target_dir / row["label"]
         dest_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO_ROOT / row["path"], dest_dir / f"{row['pick_order']:03d}_{row['filename']}")
-    print(f"[kopie] zdjecia w {target_dir}")
+    print(f"[copy] Selected images copied to {target_dir}")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     parser.add_argument("--split", default="train", choices=["train", "test", "all"])
-    parser.add_argument("--extra-dir", type=Path, default=None, help="dodatkowy plaski folder zdjec, np. data/plants")
+    parser.add_argument("--extra-dir", type=Path, default=None, help="Additional directory of images (e.g. data/plants)")
     parser.add_argument("--extra-label", default=CLASS_OTHERS)
     parser.add_argument("--n-select", type=int, default=150)
-    parser.add_argument("--limit", type=int, default=0, help="uzyj tylko N zdjec z puli (0 = wszystkie)")
-    parser.add_argument("--model", default=None, help="np. facebook/dinov2-small (domyslnie: DINOv3, a gdy gated -> DINOv2)")
+    parser.add_argument("--limit", type=int, default=0, help="Use subset of N images (0 = all)")
+    parser.add_argument("--model", default=None, help="e.g. facebook/dinov2-small (default: DINOv3 with DINOv2 fallback)")
     parser.add_argument("--equal-classes", action="store_true")
     parser.add_argument("--metric", default="cosine", choices=["cosine", "euclidean"])
     parser.add_argument("--start", default="medoid", choices=["medoid", "random"])
@@ -351,15 +326,15 @@ def main() -> None:
     args = parse_args()
     splits = ["train", "test"] if args.split == "all" else [args.split]
 
-    print("=== Wybor reprezentatywnych zdjec (facility location / k-center) ===")
-    print(f"Dane: {args.data_dir} (split: {', '.join(splits)})")
+    print("=== Representative Image Selection (Facility Location / k-Center) ===")
+    print(f"Data: {args.data_dir} (splits: {', '.join(splits)})")
 
     samples = collect_samples(args.data_dir, splits)
     if args.extra_dir is not None:
         samples += collect_extra_dir(args.extra_dir, args.extra_label)
 
     if not samples:
-        raise SystemExit(f"Blad: brak zdjec w {args.data_dir}. Sprawdz, czy istnieje {args.data_dir}/{splits[0]}/images.")
+        raise SystemExit(f"Error: no images found in {args.data_dir}.")
 
     samples = subsample(samples, args.limit)
 
@@ -367,17 +342,13 @@ def main() -> None:
     for s in samples:
         counts[s.label] = counts.get(s.label, 0) + 1
 
-    print(f"[pula] {len(samples)} zdjec: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
-
-    for label, n in sorted(counts.items()):
-        if n < 50 and args.extra_dir is None and args.limit <= 0:
-            print(f"[uwaga] klasa '{label}' ma tylko {n} zdjec - rozwaz: --extra-dir data/plants --equal-classes")
+    print(f"[pool] {len(samples)} images: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
 
     alloc = allocate_per_class(counts, args.n_select, args.equal_classes)
-    print("[podzial] do wyboru: " + ", ".join(f"{k}={v}" for k, v in sorted(alloc.items())))
+    print("[allocation] Selection targets: " + ", ".join(f"{k}={v}" for k, v in sorted(alloc.items())))
 
     if args.dry_run:
-        print("\n[dry-run] koniec - bez embeddingow i selekcji.")
+        print("\n[dry-run] Finished without computing embeddings or selections.")
         return
 
     suffix = f"_limit{args.limit}" if args.limit > 0 else ""
@@ -416,7 +387,7 @@ def main() -> None:
             "start_radius": round(radii[0], 6),
             "final_radius": round(radii[-1], 6),
         }
-        print(f"[k-center] {label}: {len(selected)}/{counts[label]}, promien {radii[0]:.4f} -> {radii[-1]:.4f}")
+        print(f"[k-center] {label}: {len(selected)}/{counts[label]}, radius {radii[0]:.4f} -> {radii[-1]:.4f}")
 
     csv_path = args.output_dir / "selected_representative.csv"
     write_csv(rows, csv_path)
@@ -449,8 +420,8 @@ def main() -> None:
     if args.copy_images:
         copy_selected(rows, args.output_dir / "selected_images")
 
-    print(f"\nGotowe. Lista do adnotacji: {csv_path}")
-    print(f"Podsumowanie: {summary_path}")
+    print(f"\nFinished. Selected images manifest: {csv_path}")
+    print(f"Summary JSON: {summary_path}")
 
 
 if __name__ == "__main__":

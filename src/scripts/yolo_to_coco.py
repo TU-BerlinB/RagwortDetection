@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""Convert a YOLO detection dataset to COCO Detection JSON.
-
-The source dataset is never modified.  If it has no ``val``/``valid`` split,
-``--val-from-train`` reserves a deterministic subset of train *in the output*.
-
-Example (from RagwortDetection):
-    python3 src/scripts/yolo_to_coco.py \
-        --source data/combined_dataset \
-        --output outputs/combined_dataset_coco \
-        --exclude-class objects --val-from-train 0.2
+"""
+File: src/scripts/yolo_to_coco.py
+Usage:
+    python src/scripts/yolo_to_coco.py --source data/combined_dataset --output outputs/combined_dataset_coco --exclude-class objects --val-from-train 0.2
+Description:
+    Converts a YOLO detection/segmentation dataset to COCO Detection JSON format without modifying the source dataset.
 """
 
 from __future__ import annotations

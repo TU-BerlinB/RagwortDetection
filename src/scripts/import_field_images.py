@@ -1,42 +1,15 @@
 """
-plantsextra.py
-
-Uzupełnia zbiór danych o zdjęcia łąki / trawy robione z góry, BEZ starca
-(obrazy tła / negatywy). Każde zapisane zdjęcie dostaje pusty plik .txt
-o tej samej nazwie (format YOLO: brak ramek = brak obiektów).
-
-Źródło zdjęć: LUCAS Cover photos (Komisja Europejska, JRC), licencja CC BY 4.0
-  d'Andrimont R. i in. (2022), LUCAS cover photos 2006-2018 over the EU,
-  Earth Syst. Sci. Data 14, 4463-4478, https://doi.org/10.5194/essd-14-4463-2022
-  -> przy publikacji wymagane jest podanie źródła; pochodzenie każdego pliku
-     zapisywane jest w metadata/plants_sources.csv
-
-Struktura w katalogu głównym projektu:
-    data/
-      +-- plants/            -> zdjęcia .jpg + puste .txt (folder data/ tworzony, jeśli go nie ma)
-    metadata/                -> tabela LUCAS, cache, logi, źródła (poza data/)
-
-Jak wybierane są zdjęcia
-------------------------
-  - tylko punkty LUCAS sklasyfikowane jako tereny trawiaste (E10/E20/E30),
-  - odrzucane są zdjęcia z niebem u góry kadru (robione pod kątem), z małą ilością
-    roślinności, z czerwoną tablicą LUCAS oraz z wyraźnymi skupiskami żółtych
-    kwiatów (żeby do negatywów nie trafił starzec),
-  - jeśli zainstalowane są torch + transformers, model CLIP dodatkowo ocenia,
-    czy zdjęcie jest zrobione z góry,
-  - zapisywany jest środek kadru (domyślnie 60% szerokości i wysokości).
-
-Wymagania
----------
-pip install requests pillow numpy
-(opcjonalnie, dokładniejszy filtr) pip install torch transformers
-
-Użycie
-------
-python src/scripts/plantsextra.py
-python src/scripts/plantsextra.py --target 1000 --countries PL,CZ,DE
-python src/scripts/plantsextra.py --crop 0.5 --save-rejected
-python src/scripts/plantsextra.py --sync-txt      # po ręcznym usunięciu zdjęć
+File: src/scripts/import_field_images.py
+Usage:
+    python src/scripts/import_field_images.py
+    python src/scripts/import_field_images.py --target 1000 --countries PL,CZ,DE
+    python src/scripts/import_field_images.py --crop 0.5 --save-rejected
+    python src/scripts/import_field_images.py --sync-txt
+Description:
+    Augments the dataset with top-down meadow and grassland negative images (without ragwort)
+    sourced from European Commission JRC LUCAS Cover photos (CC BY 4.0).
+    Pairs each saved image with an empty YOLO format .txt label file, applies color/sky/flower
+    filtering (optionally using zero-shot CLIP), and tracks metadata in metadata/plants_sources.csv.
 """
 
 from __future__ import annotations
@@ -59,18 +32,16 @@ try:
     import numpy as np
     import requests
     from PIL import Image, ImageOps
-except ImportError as exc:  # pragma: no cover
+except ImportError as exc:
     raise SystemExit(
-        f"Brakuje zależności '{exc.name}'. Zainstaluj: pip install requests pillow numpy"
+        f"Missing dependency '{exc.name}'. Install via: pip install requests pillow numpy"
     ) from exc
 
 try:
     sys.stdout.reconfigure(errors="replace")
-except Exception:  # pragma: no cover
+except Exception:
     pass
 
-
-# src/scripts/plantsextra.py -> src -> katalog główny projektu
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "plants"
@@ -86,23 +57,21 @@ IMG_EXT = ".jpg"
 FILE_PREFIX = "lucas"
 OUR_NAME = re.compile(r"^lucas\d{4}_[A-Z]{2}_\d+$")
 
-# Kraje o podobnych łąkach jak w Polsce (zmiana: --countries)
 DEFAULT_COUNTRIES = "PL,CZ,SK,DE,LT,LV,EE,AT,HU"
 
-# Progi filtra - dobrane na próbce 80 zdjęć LUCAS 2018 z Polski
-SKY_TOP_PART = 0.30       # w jakiej górnej części kadru szukamy nieba
-SKY_BLOCK = 16            # rozmiar bloku (px) na obrazku 320x240
-SKY_STD = 12.0            # niebo jest gładkie: odchylenie jasności w bloku < SKY_STD
-SKY_LUM = 110.0           # ... i jasne
-MAX_SKY = 0.03            # maks. udział bloków "nieba" w górnej części kadru
-VEG_SAT = 0.08            # piksel "roślinny": nasycenie >= VEG_SAT
-VEG_HUE = (20.0, 170.0)   # ... i odcień od żółtego do zielono-niebieskiego (stopnie)
-MIN_VEG_CLIP = 0.25       # min. udział roślinności w środku kadru (tryb clip)
-MIN_VEG_SIMPLE = 0.50     # min. udział roślinności w środku kadru (tryb simple)
-MAX_TOP_BOTTOM_DIFF = 60  # tryb simple: maks. różnica koloru góra/dół (zdjęcia pod kątem)
-MAX_RED = 0.01            # czerwone tablice LUCAS leżące na trawie
-MAX_YELLOW = 0.008        # skupiska jasnożółtych kwiatów (możliwy starzec)
-REVIEW_YELLOW = 0.002     # powyżej tego progu zdjęcie warto obejrzeć ręcznie
+SKY_TOP_PART = 0.30
+SKY_BLOCK = 16
+SKY_STD = 12.0
+SKY_LUM = 110.0
+MAX_SKY = 0.03
+VEG_SAT = 0.08
+VEG_HUE = (20.0, 170.0)
+MIN_VEG_CLIP = 0.25
+MIN_VEG_SIMPLE = 0.50
+MAX_TOP_BOTTOM_DIFF = 60
+MAX_RED = 0.01
+MAX_YELLOW = 0.008
+REVIEW_YELLOW = 0.002
 CLIP_THRESHOLD = 0.50
 
 CLIP_MODEL = "openai/clip-vit-base-patch32"
@@ -128,61 +97,56 @@ CAND_FIELDS = ["point_id", "year", "country", "lc1", "lc1_label", "survey_date",
 Candidate = Dict[str, str]
 
 
-# --------------------------------------------------------------------------- argumenty
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
-                        help="Folder na zdjęcia i puste .txt (domyślnie: data/plants)")
+                        help="Target directory for images and empty label files (default: data/plants)")
     parser.add_argument("--labels-dir", type=Path, default=None,
-                        help="Osobny folder na pliki .txt (domyślnie: ten sam co zdjęcia)")
+                        help="Separate directory for .txt label files (default: same as images)")
     parser.add_argument("--meta-dir", type=Path, default=DEFAULT_META_DIR,
-                        help="Folder na metadane, cache i logi (domyślnie: metadata/ w katalogu projektu)")
+                        help="Directory for metadata, cache, and logs (default: metadata/)")
     parser.add_argument("--target", type=int, default=1000,
-                        help="Ile zdjęć ma być w folderze wynikowym (domyślnie: 1000)")
+                        help="Target count of images in output directory (default: 1000)")
     parser.add_argument("--countries", default=DEFAULT_COUNTRIES,
-                        help=f"Kody krajów po przecinku albo ALL (domyślnie: {DEFAULT_COUNTRIES})")
+                        help=f"Comma-separated country codes or ALL (default: {DEFAULT_COUNTRIES})")
     parser.add_argument("--years", default="2018",
-                        help="Lata badania LUCAS, np. 2018 albo 2015,2018 (domyślnie: 2018)")
+                        help="LUCAS survey years, e.g. 2018 or 2015,2018 (default: 2018)")
     parser.add_argument("--classes", default="E10,E20,E30",
-                        help="Klasy pokrycia terenu LUCAS; E = wszystkie trawiaste (domyślnie: E10,E20,E30)")
+                        help="LUCAS land cover classes; E indicates grasslands (default: E10,E20,E30)")
     parser.add_argument("--crop", type=float, default=0.6,
-                        help="Jaka część środka kadru zostaje, 0.2-1.0; 1.0 = bez przycinania (domyślnie: 0.6)")
+                        help="Fraction of image center to keep, 0.2-1.0; 1.0 = no crop (default: 0.6)")
     parser.add_argument("--max-side", type=int, default=0,
-                        help="Zmniejsz dłuższy bok zapisywanego zdjęcia do tylu pikseli (0 = bez zmian)")
+                        help="Resize longer image edge to this size in pixels (0 = no resize)")
     parser.add_argument("--filter", choices=["auto", "clip", "simple", "none"], default="auto",
-                        help="auto = CLIP, jeśli zainstalowane torch + transformers, inaczej simple")
+                        help="auto = CLIP if torch/transformers available, otherwise simple heuristic")
     parser.add_argument("--clip-model", default=CLIP_MODEL,
-                        help=f"Model CLIP z Hugging Face (domyślnie: {CLIP_MODEL})")
+                        help=f"Hugging Face CLIP model identifier (default: {CLIP_MODEL})")
     parser.add_argument("--clip-threshold", type=float, default=CLIP_THRESHOLD,
-                        help=f"Min. pewność CLIP, że zdjęcie jest z góry (domyślnie: {CLIP_THRESHOLD})")
+                        help=f"Minimum CLIP confidence for top-down view (default: {CLIP_THRESHOLD})")
     parser.add_argument("--max-yellow", type=float, default=MAX_YELLOW,
-                        help=f"Maks. udział jasnożółtych kwiatów w kadrze; 1 = wyłącz ten filtr "
-                             f"(domyślnie: {MAX_YELLOW})")
+                        help=f"Maximum allowed fraction of yellow flowers; 1 = disable (default: {MAX_YELLOW})")
     parser.add_argument("--workers", type=int, default=8,
-                        help="Liczba równoległych pobrań (domyślnie: 8)")
+                        help="Parallel download worker count (default: 8)")
     parser.add_argument("--seed", type=int, default=42,
-                        help="Ziarno losowości kolejności zdjęć (domyślnie: 42)")
+                        help="Random seed for image selection order (default: 42)")
     parser.add_argument("--save-rejected", action="store_true",
-                        help="Zapisuj odrzucone zdjęcia do metadata/plants_odrzucone (do przejrzenia)")
+                        help="Save rejected images to metadata/plants_odrzucone for review")
     parser.add_argument("--sync-txt", action="store_true",
-                        help="Tylko uzupełnij brakujące .txt / usuń osierocone i zakończ")
+                        help="Synchronize missing empty .txt files / remove orphans and exit")
     parser.add_argument("--base-url", default=LUCAS_BASE_URL, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if not 0.2 <= args.crop <= 1.0:
-        parser.error("--crop musi być w przedziale 0.2-1.0")
+        parser.error("--crop must be in range 0.2-1.0")
     if args.target < 1:
-        parser.error("--target musi być dodatni")
+        parser.error("--target must be positive")
     if args.workers < 1:
-        parser.error("--workers musi być dodatni")
+        parser.error("--workers must be positive")
     return args
 
-
-# --------------------------------------------------------------------------- sieć
 
 _thread_local = threading.local()
 
@@ -210,17 +174,17 @@ def download_file(url: str, dest: Path, desc: str) -> None:
                         fh.write(chunk)
                         done += len(chunk)
                         if total:
-                            print(f"\r[pobieranie] {desc}: {done / 1e6:.0f} / {total / 1e6:.0f} MB",
+                            print(f"\r[download] {desc}: {done / 1e6:.0f} / {total / 1e6:.0f} MB",
                                   end="", flush=True)
             print()
             if total and done != total:
-                raise IOError(f"pobrano {done} z {total} bajtów")
+                raise IOError(f"Downloaded {done} of {total} bytes")
             os.replace(tmp, dest)
             return
         except Exception as exc:
-            print(f"\n[pobieranie] błąd ({attempt}/3): {exc}")
+            print(f"\n[download] error ({attempt}/3): {exc}")
             time.sleep(3 * attempt)
-    raise SystemExit(f"Nie udało się pobrać {url}")
+    raise SystemExit(f"Failed to download {url}")
 
 
 def fetch(cand: Candidate) -> Tuple[Candidate, Optional[bytes], str]:
@@ -237,8 +201,6 @@ def fetch(cand: Candidate) -> Tuple[Candidate, Optional[bytes], str]:
             time.sleep(1.5 * attempt)
     return cand, None, last
 
-
-# --------------------------------------------------------------------------- metadane LUCAS
 
 def image_name(cand: Candidate) -> str:
     return f"{FILE_PREFIX}{cand['year']}_{cand['country']}_{cand['point_id']}{IMG_EXT}"
@@ -259,9 +221,9 @@ def load_candidates(
     if cache_path.exists():
         with open(cache_path, newline="", encoding="utf-8") as fh:
             cands = list(csv.DictReader(fh))
-        print(f"[metadane] kandydaci z cache: {len(cands)} ({cache_path.name})")
+        print(f"[metadata] Loaded {len(cands)} candidates from cache ({cache_path.name})")
     else:
-        print("[metadane] przeszukuję tabelę LUCAS (1,3 GB CSV w archiwum) - to potrwa 1-3 minuty...")
+        print("[metadata] Parsing LUCAS table (1.3 GB uncompressed CSV) - this may take 1-3 minutes...")
         csv.field_size_limit(2 ** 31 - 1)
         cands = []
         t0 = time.time()
@@ -274,13 +236,13 @@ def load_candidates(
                 missing = [h for h in ("point_id", "year", "nuts0", "lc1", "file_path_ftp_cover")
                            if h not in ix]
                 if missing:
-                    raise SystemExit(f"Nieoczekiwany format tabeli LUCAS, brak kolumn: {missing}")
+                    raise SystemExit(f"Unexpected LUCAS table format, missing columns: {missing}")
                 i_id, i_year, i_cc = ix["point_id"], ix["year"], ix["nuts0"]
                 i_lc, i_url = ix["lc1"], ix["file_path_ftp_cover"]
                 i_lab, i_date = ix.get("lc1_label"), ix.get("survey_date")
                 for n, row in enumerate(reader, 1):
                     if n % 50000 == 0:
-                        print(f"\r[metadane] wierszy: {n:,}  kandydatów: {len(cands):,}  "
+                        print(f"\r[metadata] Rows: {n:,}  Candidates: {len(cands):,}  "
                               f"({time.time() - t0:.0f} s)", end="", flush=True)
                     if len(row) != len(header):
                         continue
@@ -304,7 +266,7 @@ def load_candidates(
         print()
         seen: Set[str] = set()
         unique: List[Candidate] = []
-        for cand in cands:  # ten sam punkt może wystąpić kilka razy
+        for cand in cands:
             key = cand_key(cand)
             if key not in seen:
                 seen.add(key)
@@ -316,15 +278,13 @@ def load_candidates(
             writer.writeheader()
             writer.writerows(cands)
         os.replace(tmp, cache_path)
-        print(f"[metadane] pasujących zdjęć: {len(cands)} ({time.time() - t0:.0f} s)")
+        print(f"[metadata] Found {len(cands)} matching candidate images ({time.time() - t0:.0f} s)")
 
     if base_url.rstrip("/") != LUCAS_BASE_URL:
         for cand in cands:
             cand["url"] = cand["url"].replace(LUCAS_BASE_URL, base_url.rstrip("/"))
     return cands
 
-
-# --------------------------------------------------------------------------- analiza obrazu
 
 def trim_black_borders(img: Image.Image) -> Image.Image:
     arr = np.asarray(img.convert("L"), dtype=np.float32)
@@ -369,7 +329,7 @@ def _channels(arr: np.ndarray):
 
 
 def yellow_flower_fraction(img: Image.Image) -> float:
-    """Udział jasnożółtych plamek wyraźnie jaśniejszych od otoczenia (kwiaty)."""
+    """Fraction of bright yellow pixels notably brighter than surrounding region."""
     W, H, bw, bh = 480, 360, 24, 18
     arr = np.asarray(img.resize((W, H), Image.BOX), dtype=np.float32)
     R, G, B, lum, mx, sat, hue = _channels(arr)
@@ -382,8 +342,7 @@ def yellow_flower_fraction(img: Image.Image) -> float:
 
 
 def image_stats(img: Image.Image, crop: float) -> Dict[str, float]:
-    """Proste miary: niebo u góry kadru, roślinność w środku, różnica koloru
-    góra/dół, czerwień (tablice) i żółte kwiaty."""
+    """Calculate heuristic metrics: sky presence, vegetation, top/bottom gradient, red board, yellow flowers."""
     W, H = 320, 240
     arr = np.asarray(img.resize((W, H), Image.BOX), dtype=np.float32)
     R, G, B, lum, mx, sat, hue = _channels(arr)
@@ -426,7 +385,7 @@ def center_crop(img: Image.Image, frac: float) -> Image.Image:
 
 
 class ClipScorer:
-    """Zero-shot CLIP: suma prawdopodobieństw opisów 'zdjęcie z góry'."""
+    """Zero-shot CLIP scorer estimating top-down viewing angle probability."""
 
     def __init__(self, model_name: str):
         import torch
@@ -434,8 +393,7 @@ class ClipScorer:
 
         self.torch = torch
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"[clip] ładuję model '{model_name}' ({self.device}); "
-              "za pierwszym razem pobiera ok. 600 MB...")
+        print(f"[clip] Loading model '{model_name}' on ({self.device})...")
         self.model = CLIPModel.from_pretrained(model_name).to(self.device).eval()
         self.proc = CLIPProcessor.from_pretrained(model_name)
         self.text = self.proc(text=CLIP_POSITIVE + CLIP_NEGATIVE, return_tensors="pt", padding=True)
@@ -461,9 +419,8 @@ def make_scorer(mode: str, model_name: str) -> Optional[ClipScorer]:
         return ClipScorer(model_name)
     except ImportError:
         if mode == "clip":
-            raise SystemExit("Tryb --filter clip wymaga: pip install torch transformers")
-        print("[filtr] UWAGA: brak torch/transformers - używam prostszego filtra (mniej dokładny).\n"
-              "        Dla lepszych wyników: pip install torch transformers")
+            raise SystemExit("Option --filter clip requires: pip install torch transformers")
+        print("[filter] Warning: torch or transformers not found. Using simple heuristic filter.")
         return None
 
 
@@ -472,29 +429,26 @@ def decide(stats: Dict[str, float], clip_score: Optional[float], mode: str,
     if mode == "none":
         return True, ""
     if stats["red"] > MAX_RED:
-        return False, "czerwona tablica"
+        return False, "red board detected"
     if stats["sky"] > MAX_SKY:
-        return False, f"niebo {stats['sky']:.2f}"
+        return False, f"sky detected ({stats['sky']:.2f})"
     if stats["yellow"] > max_yellow:
-        return False, f"żółte kwiaty {stats['yellow']:.4f}"
+        return False, f"yellow flowers ({stats['yellow']:.4f})"
     if clip_score is not None:
         if stats["veg"] < MIN_VEG_CLIP:
-            return False, f"mało roślinności {stats['veg']:.2f}"
+            return False, f"low vegetation ({stats['veg']:.2f})"
         if clip_score < clip_threshold:
-            return False, f"clip {clip_score:.2f}"
+            return False, f"low clip score ({clip_score:.2f})"
         return True, ""
     if stats["veg"] < MIN_VEG_SIMPLE:
-        return False, f"mało roślinności {stats['veg']:.2f}"
+        return False, f"low vegetation ({stats['veg']:.2f})"
     if stats["diff"] > MAX_TOP_BOTTOM_DIFF:
-        return False, f"zdjęcie pod kątem {stats['diff']:.0f}"
+        return False, f"angled perspective ({stats['diff']:.0f})"
     return True, ""
 
 
-# --------------------------------------------------------------------------- pliki wyjściowe
-
 def sync_txt(img_dir: Path, lbl_dir: Path) -> Tuple[int, int, int]:
-    """Dla zdjęć z tego skryptu (lucasRRRR_KK_ID.jpg) tworzy brakujące puste .txt
-    i usuwa puste .txt, których zdjęcie skasowano. Innych plików nie rusza."""
+    """Ensure every downloaded image has an empty .txt label and prune orphaned labels."""
     img_dir.mkdir(parents=True, exist_ok=True)
     lbl_dir.mkdir(parents=True, exist_ok=True)
     stems = {p.stem for p in img_dir.glob("*" + IMG_EXT) if OUR_NAME.match(p.stem)}
@@ -543,8 +497,6 @@ def rel(path: Path) -> str:
         return str(path)
 
 
-# --------------------------------------------------------------------------- main
-
 def main() -> None:
     args = parse_args()
 
@@ -556,20 +508,20 @@ def main() -> None:
     sources_path = meta_dir / "plants_sources.csv"
     review_path = meta_dir / "plants_do_przejrzenia.txt"
 
-    out_dir.mkdir(parents=True, exist_ok=True)   # tworzy też data/, jeśli go nie ma
+    out_dir.mkdir(parents=True, exist_ok=True)
     meta_dir.mkdir(parents=True, exist_ok=True)
 
     have, created, removed = sync_txt(out_dir, lbl_dir)
     if created or removed:
-        print(f"[txt] dodano {created}, usunięto {removed} osieroconych plików .txt")
+        print(f"[txt] Added {created} missing, removed {removed} orphaned .txt files")
     if args.sync_txt:
-        print(f"[gotowe] zdjęć w {rel(out_dir)}: {have}, każde ma swój pusty plik .txt")
+        print(f"[done] Images in {rel(out_dir)}: {have}, each with an empty .txt label file")
         return
 
-    print(f"[start] zdjęcia: {rel(out_dir)} | metadane: {rel(meta_dir)}")
-    print(f"[start] jest już {have} zdjęć, cel: {args.target}")
+    print(f"[start] Target images directory: {rel(out_dir)} | Metadata: {rel(meta_dir)}")
+    print(f"[start] Existing images: {have}, Target: {args.target}")
     if have >= args.target:
-        print("[gotowe] cel osiągnięty - nic do zrobienia")
+        print("[done] Target already reached; nothing to do.")
         return
 
     years = {y.strip() for y in args.years.split(",") if y.strip()}
@@ -579,8 +531,8 @@ def main() -> None:
 
     zip_path = meta_dir / "lucas_cover_attr.csv.zip"
     if not zip_path.exists():
-        print("[metadane] pobieram tabelę LUCAS (ok. 145 MB, tylko za pierwszym razem)")
-        download_file(f"{args.base_url.rstrip('/')}/{LUCAS_META_ZIP}", zip_path, "tabela LUCAS")
+        print("[metadata] Downloading LUCAS metadata table (approx 145 MB)...")
+        download_file(f"{args.base_url.rstrip('/')}/{LUCAS_META_ZIP}", zip_path, "LUCAS Table")
 
     tag = "_".join([
         "-".join(sorted(years)),
@@ -594,14 +546,14 @@ def main() -> None:
     todo = [c for c in cands
             if cand_key(c) not in processed and not (out_dir / image_name(c)).exists()]
     random.Random(args.seed).shuffle(todo)
-    print(f"[dane] do sprawdzenia: {len(todo)} (sprawdzonych wcześniej: {len(processed)})")
+    print(f"[data] Candidates to check: {len(todo)} (previously evaluated: {len(processed)})")
     if not todo:
-        print("[dane] brak nowych kandydatów - dodaj kraje (--countries) albo lata (--years 2015,2018)")
+        print("[data] No new candidates available. Add countries (--countries) or years (--years 2015,2018).")
         return
 
     scorer = make_scorer(args.filter, args.clip_model)
     mode = args.filter if args.filter != "auto" else ("clip" if scorer else "simple")
-    print(f"[filtr] tryb: {mode}")
+    print(f"[filter] Active mode: {mode}")
 
     if args.save_rejected:
         rej_dir.mkdir(parents=True, exist_ok=True)
@@ -620,27 +572,25 @@ def main() -> None:
                 batch = todo[pos: pos + batch_size]
                 pos += batch_size
 
-                # 1. pobranie i wstępna analiza
                 items: List[list] = []
                 for cand, data, err in pool.map(fetch, batch):
                     if err:
                         errors += 1
-                        proc_log.write({"key": cand_key(cand), "status": "błąd", "info": err})
+                        proc_log.write({"key": cand_key(cand), "status": "error", "info": err})
                         continue
                     try:
                         img = Image.open(io.BytesIO(data))
                         img = ImageOps.exif_transpose(img).convert("RGB")
                         img = trim_black_borders(img)
                         if min(img.size) < 200:
-                            raise ValueError(f"za mały obraz {img.size}")
+                            raise ValueError(f"Image too small {img.size}")
                     except Exception as exc:
                         errors += 1
-                        proc_log.write({"key": cand_key(cand), "status": "błąd",
-                                        "info": f"obraz: {str(exc)[:80]}"})
+                        proc_log.write({"key": cand_key(cand), "status": "error",
+                                        "info": f"image: {str(exc)[:80]}"})
                         continue
                     items.append([cand, img, image_stats(img, args.crop), None])
 
-                # 2. CLIP tylko dla zdjęć, których prosty test nie odrzucił
                 if scorer:
                     need = [it for it in items
                             if decide(it[2], 1.0, "clip", 0.0, args.max_yellow)[0]]
@@ -649,14 +599,13 @@ def main() -> None:
                         for it, score in zip(chunk, scorer.scores([it[1] for it in chunk])):
                             it[3] = score
 
-                # 3. decyzja i zapis
                 for cand, img, st, clip_score in items:
                     if accepted >= args.target:
-                        break  # bez wpisu do logu - zostaną na następny raz
+                        break
                     checked += 1
                     use_clip = clip_score if mode == "clip" else None
                     if mode == "clip" and clip_score is None:
-                        use_clip = -1.0  # odrzucone już prostym testem
+                        use_clip = -1.0
                     ok, why = decide(st, use_clip, mode, args.clip_threshold, args.max_yellow)
                     name = image_name(cand)
                     if ok:
@@ -671,7 +620,7 @@ def main() -> None:
                         if st["yellow"] > REVIEW_YELLOW:
                             to_review += 1
                             with open(review_path, "a", encoding="utf-8") as fh:
-                                fh.write(f"{name}\tzolte={st['yellow']:.4f}\n")
+                                fh.write(f"{name}\tyellow={st['yellow']:.4f}\n")
                         sources.write({
                             "file": name, "point_id": cand["point_id"], "year": cand["year"],
                             "country": cand["country"], "lc1": cand["lc1"],
@@ -685,33 +634,28 @@ def main() -> None:
                         proc_log.write({"key": cand_key(cand), "status": "ok", "info": name})
                     else:
                         rejected += 1
-                        proc_log.write({"key": cand_key(cand), "status": "odrzucone", "info": why})
+                        proc_log.write({"key": cand_key(cand), "status": "rejected", "info": why})
                         if args.save_rejected:
                             small = img.copy()
                             small.thumbnail((800, 800))
                             small.save(rej_dir / name, "JPEG", quality=85)
 
                 elapsed = (time.time() - t0) / 60
-                print(f"\r[postęp] zapisane: {accepted}/{args.target} | sprawdzone: {checked} | "
-                      f"odrzucone: {rejected} | błędy: {errors} | {elapsed:.1f} min   ",
+                print(f"\r[progress] Saved: {accepted}/{args.target} | Checked: {checked} | "
+                      f"Rejected: {rejected} | Errors: {errors} | {elapsed:.1f} min   ",
                       end="", flush=True)
     except KeyboardInterrupt:
-        print("\n[stop] przerwano - uruchom skrypt ponownie, żeby kontynuować")
+        print("\n[stop] Interrupted by user.")
     finally:
         print()
         proc_log.close()
         sources.close()
 
     have, _, _ = sync_txt(out_dir, lbl_dir)
-    print(f"[gotowe] zdjęć w {rel(out_dir)}: {have} (każde z pustym .txt)")
-    print(f"[gotowe] źródła zdjęć (licencja CC BY 4.0): {rel(sources_path)}")
+    print(f"[done] Images in {rel(out_dir)}: {have} (each with empty .txt label)")
+    print(f"[done] Image provenance recorded in: {rel(sources_path)}")
     if to_review:
-        print(f"[uwaga] {to_review} nowych zdjęć ma drobne żółte kwiaty - obejrzyj je, czy to nie starzec "
-              f"(lista: {rel(review_path)})")
-    if have < args.target:
-        print("[uwaga] zabrakło kandydatów - dodaj kraje, np. --countries PL,CZ,SK,DE,AT,HU,FR,IT,"
-              " albo lata, np. --years 2015,2018 --classes E")
-    print("[wskazówka] po ręcznym usunięciu nietrafionych zdjęć uruchom z --sync-txt")
+        print(f"[notice] {to_review} images flagged with subtle yellow flowers; review at: {rel(review_path)}")
 
 
 if __name__ == "__main__":
