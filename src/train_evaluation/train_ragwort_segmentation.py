@@ -30,7 +30,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.models.yolov8 import YOLOv8
 
-DEFAULT_CONFIG = REPO_ROOT / "data" / "ragwort_parts.yaml"
+SEG_CONFIG = REPO_ROOT / "data" / "ragwort_segmentation.yaml"
+PARTS_CONFIG = REPO_ROOT / "data" / "ragwort_parts.yaml"
+DEFAULT_CONFIG = SEG_CONFIG if SEG_CONFIG.exists() else PARTS_CONFIG
 DEFAULT_MODELS_DIR = REPO_ROOT / "models"
 
 
@@ -92,6 +94,7 @@ class RagwortPlantRecognizer:
             item = {
                 "box": box,
                 "score": score,
+                "name": name,
                 "poly": poly,
                 "area": area,
             }
@@ -108,6 +111,8 @@ class RagwortPlantRecognizer:
                 if score >= self.min_stem_conf:
                     stems.append(item)
                     total_stem_area += area
+            elif "ragwort" in name_lower:
+                others.append(item)
             else:
                 others.append(item)
 
@@ -119,6 +124,12 @@ class RagwortPlantRecognizer:
         num_flowers = len(flowers)
         num_leaves = len(leaves)
         num_stems = len(stems)
+
+        ragwort_objs = [
+            o for o in others if "ragwort" in str(o.get("name", "")).lower()
+        ]
+        num_ragwort = len(ragwort_objs)
+        total_ragwort_area = sum(o["area"] for o in ragwort_objs)
 
         if num_flowers >= 2 and (num_leaves >= 1 or num_stems >= 1):
             # Stadium pelnego kwitnienia (Flowering plant)
@@ -143,11 +154,11 @@ class RagwortPlantRecognizer:
             is_ragwort = True
             stage = "flowering_inflorescence"
             confidence = float(np.mean([f["score"] for f in flowers]))
-        elif len(others) > 0 and any("ragwort" in str(c).lower() for c in class_names):
-            # Model uczony bezposrednio z klasa 'ragwort'
+        elif len(ragwort_objs) > 0:
+            # Model uczony bezposrednio z klasa 'ragwort' (segmentacja lub detekcja calej rosliny)
             is_ragwort = True
-            stage = "direct_detection"
-            confidence = float(np.max(scores))
+            stage = "direct_ragwort_segmentation" if any(o.get("poly") is not None for o in ragwort_objs) else "direct_detection"
+            confidence = float(max(o["score"] for o in ragwort_objs))
 
         return {
             "is_ragwort": is_ragwort,
@@ -157,17 +168,20 @@ class RagwortPlantRecognizer:
                 "flowers": num_flowers,
                 "leaves": num_leaves,
                 "stems": num_stems,
-                "total_parts": num_flowers + num_leaves + num_stems,
+                "ragwort": num_ragwort,
+                "total_parts": num_flowers + num_leaves + num_stems + num_ragwort,
             },
             "areas": {
                 "flower_area_px": float(total_flower_area),
                 "leaf_area_px": float(total_leaf_area),
                 "stem_area_px": float(total_stem_area),
+                "ragwort_area_px": float(total_ragwort_area),
             },
             "raw_parts": {
                 "flowers": flowers,
                 "leaves": leaves,
                 "stems": stems,
+                "ragwort": ragwort_objs,
             }
         }
 
@@ -271,7 +285,7 @@ class RagwortPlantRecognizer:
 
 def train_ragwort_segmentation(
     data: Union[str, Path] = DEFAULT_CONFIG,
-    model_weight: str = "yolov8n-seg.pt",
+    model_weight: str = "yolov8s-seg.pt",
     epochs: int = 50,
     imgsz: int = 640,
     batch: int = 8,
@@ -400,8 +414,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="yolov8n-seg.pt",
-        help="Wagi bazowe: yolov8n-seg.pt, yolov8s-seg.pt, yolo11n-seg.pt, yolo11s-seg.pt itp.",
+        default="yolov8s-seg.pt",
+        help="Wagi bazowe: yolov8s-seg.pt, yolov8m-seg.pt, yolo11s-seg.pt itp.",
     )
     parser.add_argument("--epochs", type=int, default=50, help="Liczba epok treningu")
     parser.add_argument("--imgsz", type=int, default=640, help="Rozdzielczosc obrazu (np. 640, 1024)")

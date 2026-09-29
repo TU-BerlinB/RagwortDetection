@@ -3,7 +3,7 @@ train_segmentation.py
 Skrot do uruchamiania treningu segmentacji organow starca jakubka.
 Uzycie:
   python scripts/train_segmentation.py --help
-  python scripts/train_segmentation.py --model yolov8n-seg.pt --epochs 50
+  python scripts/train_segmentation.py --model yolov8s-seg.pt --epochs 50
 """
 
 from __future__ import annotations

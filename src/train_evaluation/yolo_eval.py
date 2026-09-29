@@ -261,39 +261,79 @@ def testuj_zewnetrzne_zdjecia(model: YOLOv8, sciezki_zdjec: List[Path]):
 
 
 def trenuj_i_ewaluuj(
-    epochs: int = 5,
-    imgsz: int = 416,
+    data_yaml: Optional[Union[str, Path]] = None,
+    epochs: int = 50,
+    imgsz: int = 640,
     batch: int = 16,
-    workers: int =2,
+    workers: int = 4,
+    device: Optional[str] = None,
+    model_name: str = "yolov8s.pt",
     skip_train: bool = False,
     weights_path: Optional[str] = None,
+    test_images_dir: Optional[Union[str, Path]] = None,
+    test_labels_dir: Optional[Union[str, Path]] = None,
 ):
-    """Główna funkcja wykonująca trening, zapis wag, ewaluację i testy zewnętrzne."""
+    """Główna funkcja wykonująca trening (z wagami), zapis wag, ewaluację i testy zewnętrzne."""
+    import torch
+
+    # Automatyczny wybór urządzenia (CUDA / GPU lub CPU)
+    if device is None:
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    elif str(device).isdigit():
+        device = f"cuda:{device}" if torch.cuda.is_available() else "cpu"
+    elif str(device).lower() in ("gpu", "cuda"):
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    # Automatyczne wyszukanie pliku data.yaml (priorytet dla zwagowanych danych)
+    if data_yaml is None:
+        candidates = [
+            REPO_ROOT / "data" / "data_concatenated" / "data_weighted.yaml",
+            REPO_ROOT / "dataset_weighted" / "data.yaml",
+            REPO_ROOT / "data" / "combined_dataset" / "data_weighted.yaml",
+            REPO_ROOT / "data" / "combined_dataset" / "data.yaml",
+        ]
+        for c in candidates:
+            if c.exists():
+                data_yaml = c
+                break
+        if data_yaml is None:
+            data_yaml = DATA_YAML
+
+    data_yaml = Path(data_yaml)
+
     print("====================================================================")
-    print(" 1. TRENING MODELU YOLOV8")
+    print(" 1. TRENING MODELU YOLOV8 (Z UWZGLĘDNIENIEM WAG)")
     print("====================================================================")
+    print(f"[YOLOv8] Urządzenie obliczeniowe: {device} (CUDA: {torch.cuda.is_available()})")
+    if torch.cuda.is_available() and device != "cpu":
+        try:
+            print(f"[YOLOv8] Karta graficzna (GPU): {torch.cuda.get_device_name(0)}")
+        except Exception:
+            pass
+    print(f"[YOLOv8] Zbiór danych:           {data_yaml}")
+    print(f"[YOLOv8] Model bazowy:           {model_name}")
+    print(f"[YOLOv8] Parametry:              Epoki: {epochs}, Imgsz: {imgsz}, Batch: {batch}, Workers: {workers}")
 
     best_weights_file = MODELS_DIR / "ragwort_yolov8_best.pt"
 
     if skip_train and (weights_path or best_weights_file.exists()):
         chosen_weight = weights_path or str(best_weights_file)
         print(f"[INFO] Pomijam trening. Ładuję istniejące wagi: {chosen_weight}")
-        model = YOLOv8(chosen_weight)
+        model = YOLOv8(chosen_weight, device=device)
     else:
-        if not DATA_YAML.exists():
-            raise FileNotFoundError(f"Brak pliku {DATA_YAML}. Uruchom najpierw data_download.py!")
+        if not data_yaml.exists():
+            raise FileNotFoundError(f"Brak pliku konfiguracji danych: {data_yaml}!")
 
-        model = YOLOv8("yolov8n.pt")
-        print(f"[YOLOv8] Urządzenie obliczeniowe: {model.device}")
-        print(f"[YOLOv8] Rozpoczynam trening na wszystkich danych: {DATA_YAML} (Epoki: {epochs}, Imgsz: {imgsz}, Batch: {batch})")
+        model = YOLOv8(model_name, device=device)
 
         model.train(
-            data=DATA_YAML,
+            data=str(data_yaml),
             epochs=epochs,
             imgsz=imgsz,
             batch=batch,
             workers=workers,
-            name="ragwort_yolov8",
+            device=device,
+            name="ragwort_yolov8_weighted",
             exist_ok=True,
             verbose=True,
         )
@@ -303,27 +343,49 @@ def trenuj_i_ewaluuj(
     print("\n====================================================================")
     print(" 2. WALIDACJA MODELU NA ZBIORZE TESTOWYM (YOLO Metrics)")
     print("====================================================================")
-    metrics = model.val(data=DATA_YAML, imgsz=imgsz, split="val", verbose=False)
-    print(f"mAP@50               : {metrics.box.map50:.4f}")
-    print(f"mAP@50-95            : {metrics.box.map:.4f}")
-    print(f"Precyzja (Precision) : {metrics.box.mp:.4f}")
-    print(f"Czułość (Recall)     : {metrics.box.mr:.4f}")
+    try:
+        metrics = model.val(data=str(data_yaml), imgsz=imgsz, split="val", device=device, verbose=False)
+        print(f"mAP@50               : {metrics.box.map50:.4f}")
+        print(f"mAP@50-95            : {metrics.box.map:.4f}")
+        print(f"Precyzja (Precision) : {metrics.box.mp:.4f}")
+        print(f"Czułość (Recall)     : {metrics.box.mr:.4f}")
+    except Exception as e:
+        print(f"[OSTRZEŻENIE] Nie udało się przeprowadzić standardowej walidacji YOLO: {e}")
 
     print("\n====================================================================")
     print(" 3. EWALUACJA Z UŻYCIEM FUNKCJI data_eval (IoU = 0.5)")
     print("====================================================================")
-    if TEST_IMAGES_DIR.exists() and TEST_LABELS_DIR.exists():
-        ground_truth = wczytaj_poprawne_dane_z_folderu(TEST_IMAGES_DIR, TEST_LABELS_DIR)
-        predictions = model.predict_for_eval(TEST_IMAGES_DIR, conf=0.25)
-        ewaluacja_modelu(str(TEST_IMAGES_DIR), predictions, ground_truth, prog_iou=0.5)
+    # Wyznaczenie folderu testowego
+    t_img = test_images_dir
+    t_lbl = test_labels_dir
+    if t_img is None or not Path(t_img).exists():
+        for cand_img, cand_lbl in [
+            (REPO_ROOT / "data" / "data_concatenated" / "combined_dataset" / "test" / "images",
+             REPO_ROOT / "data" / "data_concatenated" / "combined_dataset" / "test" / "labels"),
+            (TEST_IMAGES_DIR, TEST_LABELS_DIR),
+            (REPO_ROOT / "dataset_weighted" / "images" / "val",
+             REPO_ROOT / "dataset_weighted" / "labels" / "val"),
+        ]:
+            if cand_img.exists() and cand_lbl.exists():
+                t_img, t_lbl = cand_img, cand_lbl
+                break
+
+    if t_img and Path(t_img).exists() and t_lbl and Path(t_lbl).exists():
+        print(f"[data_eval] Obliczanie IoU, Precision, Recall na: {t_img}")
+        ground_truth = wczytaj_poprawne_dane_z_folderu(Path(t_img), Path(t_lbl))
+        predictions = model.predict_for_eval(Path(t_img), conf=0.25)
+        ewaluacja_modelu(str(t_img), predictions, ground_truth, prog_iou=0.5)
     else:
         print("[OSTRZEŻENIE] Brak podzbioru testowego do ewaluacji data_eval.")
 
     print("\n====================================================================")
     print(" 4. TESTY NA NOWYCH ZDJĘCIACH Z INTERNETU")
     print("====================================================================")
-    zewn_zdjecia = pobierz_zewnetrzne_zdjecia()
-    testuj_zewnetrzne_zdjecia(model, zewn_zdjecia)
+    try:
+        zewn_zdjecia = pobierz_zewnetrzne_zdjecia()
+        testuj_zewnetrzne_zdjecia(model, zewn_zdjecia)
+    except Exception as e:
+        print(f"[OSTRZEŻENIE] Testy zewnętrzne pominięte: {e}")
 
     print("\n====================================================================")
     print(" ZAKOŃCZONO CAŁY PROCES POMYŚLNIE!")
@@ -331,18 +393,29 @@ def trenuj_i_ewaluuj(
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--epochs", type=int, default=5, help="Liczba epok treningu (domyślnie: 5)")
-    parser.add_argument("--imgsz", type=int, default=416, help="Rozdzielczość obrazu wejściowego (domyślnie: 416)")
-    parser.add_argument("--batch", type=int, default=16, help="Rozmiar batcha (domyślnie: 16)")
-    parser.add_argument("--skip-train", action="store_true", help="Pomiń trening i załaduj wagi z models/ragwort_yolov8_best.pt")
+    parser = argparse.ArgumentParser(
+        description="data_eval - Trening YOLOv8 (z wagami) i ewaluacja detekcji.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--data", type=str, default=None, help="Ścieżka do data.yaml (domyślnie auto-wykrywanie data_weighted.yaml)")
+    parser.add_argument("--device", type=str, default=None, help="Urządzenie: '0' (CUDA/GPU), 'cpu' (domyślnie: auto-wykrycie CUDA)")
+    parser.add_argument("--model", type=str, default="yolov8s.pt", help="Wagi modelu bazowego (domyślnie: yolov8s.pt - Small)")
+    parser.add_argument("--epochs", type=int, default=50, help="Liczba epok treningu (domyślnie: 50)")
+    parser.add_argument("--imgsz", type=int, default=640, help="Rozdzielczość obrazu (domyślnie: 640)")
+    parser.add_argument("--batch", type=int, default=16, help="Rozmiar batcha (domyślnie: 16, zmniejsz do 8 przy małym VRAM)")
+    parser.add_argument("--workers", type=int, default=4, help="Liczba wątków loadera (domyślnie: 4, ustaw 0 na Windows przy problemach)")
+    parser.add_argument("--skip-train", action="store_true", help="Pomiń trening i załaduj istniejące wagi")
     parser.add_argument("--weights", type=str, default=None, help="Własna ścieżka do wag .pt")
     args = parser.parse_args()
 
     trenuj_i_ewaluuj(
+        data_yaml=args.data,
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,
+        workers=args.workers,
+        device=args.device,
+        model_name=args.model,
         skip_train=args.skip_train,
         weights_path=args.weights,
     )

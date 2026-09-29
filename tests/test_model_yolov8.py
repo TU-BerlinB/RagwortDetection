@@ -23,7 +23,7 @@ def test_imports():
 
 
 def test_inference():
-    model = YOLOv8("yolov8n.pt")
+    model = YOLOv8("yolov8s.pt")
     print(f"Device: {model.device}")
 
     # Test na obrazie PIL
@@ -51,7 +51,7 @@ def test_inference():
 
 
 def test_predict_for_eval():
-    model = YOLOv8("yolov8n.pt")
+    model = YOLOv8("yolov8s.pt")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)

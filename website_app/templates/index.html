@@ -1,245 +1,666 @@
 <!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🌿 Ragwort Vision Dashboard – Opcja C Pipeline</title>
+    <title>🌿 Ragwort Vision Intelligence Hub – Option C & DEIM</title>
+    <!-- Google Fonts: Plus Jakarta Sans -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <!-- Bootstrap 5 & Bootstrap Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+
     <style>
-        body {
-            background-color: #0b1120;
-            color: #f1f5f9;
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        :root {
+            --bg-body: #070b14;
+            --bg-card: rgba(16, 24, 40, 0.78);
+            --bg-card-hover: rgba(22, 34, 56, 0.85);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --border-glass-glow: rgba(56, 189, 248, 0.35);
+            --cyan-accent: #38bdf8;
+            --cyan-glow: rgba(56, 189, 248, 0.25);
+            --emerald-accent: #10b981;
+            --emerald-glow: rgba(16, 185, 129, 0.25);
+            --crimson-accent: #ef4444;
+            --amber-accent: #f59e0b;
+            --purple-accent: #a855f7;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --radius-card: 16px;
         }
-        .card {
-            background-color: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 12px;
+
+        body {
+            background-color: var(--bg-body);
+            background-image: 
+                radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.07) 0%, transparent 40%),
+                radial-gradient(circle at 85% 20%, rgba(168, 85, 247, 0.07) 0%, transparent 40%),
+                radial-gradient(circle at 50% 85%, rgba(16, 185, 129, 0.05) 0%, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-main);
+            font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+            min-height: 100vh;
+        }
+
+        /* Glassmorphism Cards */
+        .glass-card {
+            background: var(--bg-card);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-card);
+            box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5), 0 0 15px -3px rgba(56, 189, 248, 0.03);
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        .glass-card:hover {
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+
+        /* Header Branding & Badges */
+        .brand-badge-pulse {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: rgba(16, 185, 129, 0.15);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 9999px;
+            color: #34d399;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+        }
+        .pulse-dot {
+            width: 8px;
+            height: 8px;
+            background-color: #10b981;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #10b981;
+            animation: pulse-ring 1.8s infinite;
+        }
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1.05); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        /* Model Family Selector Buttons */
+        .family-selector-box {
+            background: rgba(11, 17, 32, 0.85);
+            border: 1px solid var(--border-glass);
+            border-radius: 14px;
+            padding: 4px;
+            display: inline-flex;
+            gap: 4px;
+        }
+        .family-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text-muted);
+            border-radius: 10px;
+            padding: 6px 14px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .family-btn:hover {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.06);
+        }
+        .family-btn.active-yolo {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.25), rgba(56, 189, 248, 0.25));
+            border-color: rgba(56, 189, 248, 0.5);
+            color: #38bdf8;
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
+        }
+        .family-btn.active-deim {
+            background: linear-gradient(135deg, rgba(168, 85, 247, 0.25), rgba(236, 72, 153, 0.25));
+            border-color: rgba(168, 85, 247, 0.5);
+            color: #d8b4fe;
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
+        }
+
+        /* Modern Tabs */
+        .nav-tabs {
+            border-bottom: 1px solid var(--border-glass);
+            gap: 8px;
         }
         .nav-tabs .nav-link {
-            color: #94a3b8;
+            color: var(--text-muted);
             font-weight: 600;
             border: none;
             padding: 12px 20px;
+            border-radius: 12px 12px 0 0;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+        .nav-tabs .nav-link:hover {
+            color: #fff;
+            background: rgba(255, 255, 255, 0.03);
         }
         .nav-tabs .nav-link.active {
-            color: #38bdf8;
-            background-color: #1e293b;
-            border-bottom: 3px solid #38bdf8;
+            color: var(--cyan-accent);
+            background: var(--bg-card);
+            border-bottom: 3px solid var(--cyan-accent);
+            box-shadow: 0 -5px 15px -5px rgba(56, 189, 248, 0.15);
         }
-        .video-container {
+
+        /* Video Container & Floating Badges */
+        .video-wrapper {
             position: relative;
             background-color: #000;
-            border-radius: 12px;
+            border-radius: var(--radius-card);
             overflow: hidden;
-            border: 2px solid #38bdf8;
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.6);
+            border: 2px solid rgba(56, 189, 248, 0.35);
+            box-shadow: 0 15px 35px -5px rgba(0, 0, 0, 0.8), 0 0 25px rgba(56, 189, 248, 0.1);
         }
-        .video-container img {
+        .video-wrapper img {
             width: 100%;
             height: auto;
             display: block;
         }
-        .badge-live {
+        .overlay-badge-top-left {
             position: absolute;
             top: 14px;
             left: 14px;
+            z-index: 10;
+            display: flex;
+            gap: 8px;
+        }
+        .overlay-badge-top-right {
+            position: absolute;
+            top: 14px;
+            right: 14px;
+            z-index: 10;
+            display: flex;
+            gap: 8px;
+        }
+        .overlay-badge-bottom {
+            position: absolute;
+            bottom: 12px;
+            left: 14px;
+            right: 14px;
+            z-index: 10;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: none;
+        }
+        .badge-live-pulse {
             background: rgba(239, 68, 68, 0.9);
             padding: 5px 12px;
             border-radius: 20px;
-            font-size: 0.8rem;
+            font-size: 0.75rem;
+            font-weight: 800;
+            letter-spacing: 0.05em;
+            animation: live-blink 2s infinite;
+        }
+        @keyframes live-blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.45; }
+        }
+
+        /* Metric KPI Cards */
+        .kpi-card {
+            background: rgba(16, 24, 40, 0.8);
+            border: 1px solid var(--border-glass);
+            border-radius: 14px;
+            padding: 16px;
+            transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+        .kpi-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(56, 189, 248, 0.3);
+            box-shadow: 0 8px 20px -5px rgba(0, 0, 0, 0.5);
+        }
+        .kpi-title {
+            font-size: 0.75rem;
             font-weight: 700;
-            animation: pulse 2s infinite;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--text-muted);
+            margin-bottom: 6px;
         }
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.4; }
-            100% { opacity: 1; }
+        .kpi-val {
+            font-size: 1.6rem;
+            font-weight: 800;
+            line-height: 1.2;
         }
-        .stat-card {
-            padding: 14px;
+
+        /* Organ Badge Colors */
+        .organ-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 3px 9px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+        .organ-flower { background-color: #ffd700; color: #000; }
+        .organ-leaf { background-color: #22c55e; color: #000; }
+        .organ-stem { background-color: #b45309; color: #fff; }
+        .organ-ragwort { background-color: #ef4444; color: #fff; }
+
+        /* Form Controls Styling */
+        .form-select, .form-control {
+            background-color: #0b1120 !important;
+            border-color: rgba(255, 255, 255, 0.12) !important;
+            color: #f8fafc !important;
             border-radius: 10px;
-            background: #182234;
-            border-left: 4px solid #38bdf8;
         }
-        .stat-val {
-            font-size: 1.8rem;
-            font-weight: 700;
+        .form-select:focus, .form-control:focus {
+            border-color: var(--cyan-accent) !important;
+            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.25) !important;
         }
-        .table-dark {
-            --bs-table-bg: #1e293b;
-            --bs-table-border-color: #334155;
+        .form-range::-webkit-slider-thumb {
+            background: var(--cyan-accent);
+            box-shadow: 0 0 8px var(--cyan-accent);
         }
-        .organ-badge-flower {
-            background-color: #ffd700;
-            color: #000;
-            font-weight: bold;
-        }
-        .organ-badge-leaf {
-            background-color: #22c55e;
-            color: #000;
-            font-weight: bold;
-        }
-        .organ-badge-stem {
-            background-color: #a0522d;
-            color: #fff;
-            font-weight: bold;
-        }
+
+        /* Console Code Box */
         .code-box {
-            background-color: #090d16;
-            border: 1px solid #283548;
-            border-radius: 8px;
+            background-color: #060911;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
             padding: 14px;
-            font-family: 'Consolas', 'Fira Code', monospace;
+            font-family: 'JetBrains Mono', 'Consolas', monospace;
             color: #38bdf8;
+            font-size: 0.85rem;
             white-space: pre-wrap;
             word-break: break-all;
+        }
+
+        /* Sample Image Test Cards */
+        .sample-thumb-card {
+            background: rgba(11, 17, 32, 0.8);
+            border: 1px solid var(--border-glass);
+            border-radius: 12px;
+            padding: 10px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .sample-thumb-card:hover {
+            border-color: var(--cyan-accent);
+            transform: translateY(-2px);
+            background: rgba(18, 28, 48, 0.9);
+        }
+
+        /* Toast notifications container */
+        .toast-container {
+            z-index: 9999;
+        }
+        .custom-toast {
+            background: rgba(15, 23, 42, 0.95);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            border-radius: 12px;
+            color: #fff;
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.6);
         }
     </style>
 </head>
 <body class="py-3">
-    <div class="container-fluid px-4">
+    <div class="container-fluid px-3 px-lg-4">
 
-        <!-- Górny pasek nawigacyjny -->
-        <header class="d-flex flex-wrap justify-content-between align-items-center mb-3 pb-3 border-bottom border-secondary">
-            <div>
-                <h3 class="fw-bold text-white mb-0">🌿 Ragwort Detection & Option C Vision Hub</h3>
-                <small class="text-secondary">Segmentacja organów (Kwiaty, Liście, Łodygi) &bull; Kompozycyjne rozpoznawanie starca jakubka</small>
-            </div>
-            <div class="d-flex align-items-center gap-3 mt-2 mt-md-0">
-                <div class="d-flex align-items-center bg-dark p-2 rounded border border-secondary">
-                    <label for="modelSelect" class="small text-secondary me-2 mb-0">Aktywny model:</label>
-                    <select id="modelSelect" class="form-select form-select-sm bg-secondary text-white border-0" style="min-width: 220px;" onchange="switchModel(this.value)">
-                        <option value="">Ładowanie modeli...</option>
-                    </select>
+        <!-- TOP NAVIGATION & DUAL MODEL SELECTION CENTER -->
+        <header class="d-flex flex-wrap justify-content-between align-items-center mb-3 pb-3 border-bottom border-secondary border-opacity-25 gap-3">
+            <div class="d-flex align-items-center gap-3">
+                <div class="d-flex align-items-center justify-content-center bg-dark bg-opacity-75 rounded-3 p-2 border border-secondary border-opacity-50" style="width: 48px; height: 48px;">
+                    <i class="bi bi-flower1 text-warning fs-3"></i>
                 </div>
-                <span id="modelTypeBadge" class="badge bg-primary py-2 px-3">Opcja C (Segmentacja)</span>
+                <div>
+                    <div class="d-flex align-items-center gap-2">
+                        <h4 class="fw-extrabold text-white mb-0" style="letter-spacing: -0.02em;">Ragwort Vision Intelligence</h4>
+                        <span class="brand-badge-pulse"><span class="pulse-dot"></span> LIVE</span>
+                    </div>
+                    <small class="text-secondary">Multi-task Weed Organ Biometrics &bull; Hege Robot & RealSense D405 Integration</small>
+                </div>
+            </div>
+
+            <!-- SELECTION CENTER: ARCHITECTURE (YOLO vs DEIM) + MODEL WEIGHTS -->
+            <div class="d-flex flex-wrap align-items-center gap-3">
+                <!-- 1. Model Family / Architecture Selector -->
+                <div class="d-flex flex-column">
+                    <span class="small text-secondary mb-1" style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">
+                        1. Engine Architecture:
+                    </span>
+                    <div class="family-selector-box">
+                        <button type="button" class="family-btn active-yolo" id="btnFamilyYolo" onclick="selectModelFamily('yolo')">
+                            <i class="bi bi-cpu-fill"></i>
+                            <span>YOLO Engine</span>
+                        </button>
+                        <button type="button" class="family-btn" id="btnFamilyDeim" onclick="selectModelFamily('deim')">
+                            <i class="bi bi-diagram-3-fill"></i>
+                            <span>DEIMv2 + DINOv3</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 2. Model Weights Checkpoint (.pt / .pth) Selector -->
+                <div class="d-flex flex-column" style="min-width: 270px;">
+                    <span class="small text-secondary mb-1" style="font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;">
+                        2. Model Weights (.pt / .pth):
+                    </span>
+                    <div class="input-group input-group-sm">
+                        <span class="input-group-text bg-dark border-secondary border-opacity-50 text-info">
+                            <i class="bi bi-file-earmark-binary"></i>
+                        </span>
+                        <select id="modelSelect" class="form-select form-select-sm" onchange="switchModel(this.value)">
+                            <option value="">Loading models...</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 3. Active Mode Badge -->
+                <div class="d-flex flex-column justify-content-end pt-3">
+                    <span id="modelTypeBadge" class="badge py-2 px-3 fw-bold" style="background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); color: #34d399; font-size: 0.8rem;">
+                        <i class="bi bi-check2-circle me-1"></i> Loading...
+                    </span>
+                </div>
             </div>
         </header>
 
-        <!-- Zakładki główne -->
+        <!-- Main Application Navigation Tabs -->
         <ul class="nav nav-tabs mb-4" id="mainTabs" role="tablist">
             <li class="nav-item">
                 <button class="nav-link active" id="live-tab" data-bs-toggle="tab" data-bs-target="#live-pane">
-                    <i class="bi bi-camera-video me-1"></i> 1. Kamera na żywo (Pipeline C)
+                    <i class="bi bi-camera-video me-1 text-danger"></i> 1. Live Feed & AI Telemetry
                 </button>
             </li>
             <li class="nav-item">
                 <button class="nav-link" id="image-tab" data-bs-toggle="tab" data-bs-target="#image-pane">
-                    <i class="bi bi-image me-1"></i> 2. Przetwarzanie zdjęć (Upload)
+                    <i class="bi bi-image me-1 text-info"></i> 2. Image Processing & Field Samples
                 </button>
             </li>
             <li class="nav-item">
                 <button class="nav-link" id="train-tab" data-bs-toggle="tab" data-bs-target="#train-pane">
-                    <i class="bi bi-cpu me-1"></i> 3. Trening na innym komputerze (Hub)
+                    <i class="bi bi-terminal me-1 text-warning"></i> 3. Training Hub & Colab
                 </button>
             </li>
         </ul>
 
         <div class="tab-content" id="mainTabsContent">
 
-            <!-- ZAKŁADKA 1: KAMERA NA ŻYWO (LIVE PIPELINE C) -->
+            <!-- TAB 1: LIVE CAMERA STREAM & TELEMETRY -->
             <div class="tab-pane fade show active" id="live-pane">
                 <div class="row g-4">
-                    <!-- Kolumna wideo -->
+                    <!-- Left Column: Video Stream & KPI Cards -->
                     <div class="col-lg-8">
-                        <div class="video-container mb-3">
-                            <span class="badge-live">● STRUMIEŃ LIVE</span>
-                            <img src="/video_feed" id="liveVideoFeed" alt="Strumień wideo z detekcją">
+                        <!-- Video Stream Container with HUD Overlays -->
+                        <div class="video-wrapper mb-3" id="videoWrapper">
+                            <div class="overlay-badge-top-left">
+                                <span class="badge-live-pulse">● LIVE STREAM</span>
+                                <span id="sensorBadge" class="badge bg-dark bg-opacity-75 border border-secondary text-white small">
+                                    <i class="bi bi-camera-fill text-info me-1"></i> RealSense D405 (RGB-D)
+                                </span>
+                            </div>
+                            <div class="overlay-badge-top-right">
+                                <span id="hudModelBadge" class="badge bg-dark bg-opacity-75 border border-info text-info small">
+                                    <i class="bi bi-lightning-charge-fill me-1"></i> YOLOv8 Seg
+                                </span>
+                                <span id="resolutionBadge" class="badge bg-dark bg-opacity-75 border border-secondary text-light small">
+                                    {{ resolution }} ({{ camera_resolution|upper }})
+                                </span>
+                            </div>
+                            <div class="overlay-badge-bottom">
+                                <span id="depthReadingBadge" class="badge bg-dark bg-opacity-75 border border-warning text-warning small">
+                                    <i class="bi bi-rulers me-1"></i> Depth: -- cm
+                                </span>
+                                <span id="fpsBadgeOverlay" class="badge bg-dark bg-opacity-75 border border-secondary text-info small">
+                                    <i class="bi bi-speedometer2 me-1"></i> FPS: <span id="fpsNumber">--</span> | <span id="fpsResolutionText">{{ resolution }} ({{ camera_resolution|upper }})</span>
+                                </span>
+                            </div>
+                            <img src="/video_feed" id="liveVideoFeed" alt="Video stream with weed detection overlay">
                         </div>
 
-                        <!-- Kafelki telemetryczne Opcji C -->
+                        <!-- Player Action Controls -->
+                        <div class="d-flex justify-content-between align-items-center mb-3 px-1">
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-sm btn-outline-info" onclick="captureSnapshot()">
+                                    <i class="bi bi-camera me-1"></i> Capture Frame (Snapshot)
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="toggleStreamPause()">
+                                    <i class="bi bi-pause-fill me-1" id="pauseBtnIcon"></i> Pause / Resume
+                                </button>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-sm btn-outline-secondary" onclick="toggleFullscreen()">
+                                    <i class="bi bi-arrows-fullscreen me-1"></i> Fullscreen
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 4 Telemetry KPI Cards -->
                         <div class="row g-3">
+                            <!-- Card 1: Primary Verdict -->
                             <div class="col-md-3">
-                                <div class="stat-card" style="border-left-color: #38bdf8;">
-                                    <div class="text-secondary small">PŁYNNOŚĆ (FPS)</div>
-                                    <div class="stat-val text-info" id="fpsVal">--</div>
+                                <div class="kpi-card" id="verdictCard" style="border-left: 4px solid var(--crimson-accent);">
+                                    <div class="kpi-title d-flex justify-content-between">
+                                        <span>PRIMARY VERDICT</span>
+                                        <i class="bi bi-shield-check" id="verdictIcon"></i>
+                                    </div>
+                                    <div class="kpi-val fs-5 text-danger" id="verdictVal">ANALYZING...</div>
+                                    <small class="text-secondary" id="confidenceVal">Confidence: --%</small>
                                 </div>
                             </div>
+                            <!-- Card 2: Plant Phenological Stage -->
                             <div class="col-md-3">
-                                <div class="stat-card" id="verdictCard" style="border-left-color: #ef4444;">
-                                    <div class="text-secondary small">WERDYKT</div>
-                                    <div class="stat-val fs-4 mt-1" id="verdictVal">ANALIZA...</div>
+                                <div class="kpi-card" style="border-left: 4px solid var(--emerald-accent);">
+                                    <div class="kpi-title d-flex justify-content-between">
+                                        <span>PLANT STAGE</span>
+                                        <i class="bi bi-tree"></i>
+                                    </div>
+                                    <div class="kpi-val fs-5 text-success" id="stageVal">--</div>
+                                    <small class="text-secondary">Option C Morphology</small>
                                 </div>
                             </div>
+                            <!-- Card 3: Detected Organs / Plants -->
                             <div class="col-md-3">
-                                <div class="stat-card" style="border-left-color: #22c55e;">
-                                    <div class="text-secondary small">STADIUM ROŚLINY</div>
-                                    <div class="stat-val fs-5 mt-1 text-success" id="stageVal">--</div>
+                                <div class="kpi-card" style="border-left: 4px solid var(--amber-accent);">
+                                    <div class="kpi-title d-flex justify-content-between">
+                                        <span>DETECTED ORGANS</span>
+                                        <i class="bi bi-flower2"></i>
+                                    </div>
+                                    <div class="kpi-val fs-6 text-warning mt-1" id="organCountsVal">0 flowers, 0 leaves</div>
+                                    <small class="text-secondary" id="totalPartsVal">Total objects: 0</small>
                                 </div>
                             </div>
+                            <!-- Card 4: FPS & Engine Performance -->
                             <div class="col-md-3">
-                                <div class="stat-card" style="border-left-color: #ffd700;">
-                                    <div class="text-secondary small">ORGANY W KADRZE</div>
-                                    <div class="stat-val fs-5 mt-1 text-warning" id="organCountsVal">0 kwiatów, 0 liści</div>
+                                <div class="kpi-card" style="border-left: 4px solid var(--cyan-accent);">
+                                    <div class="kpi-title d-flex justify-content-between">
+                                        <span>FPS & ENGINE</span>
+                                        <i class="bi bi-activity"></i>
+                                    </div>
+                                    <div class="kpi-val text-info" id="fpsVal">-- <span class="fs-6 text-secondary">FPS</span></div>
+                                    <small class="text-secondary" id="activeModelShortName">Model: ...</small>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Prawy panel kontrolny -->
+                    <!-- Right Column: Control Panels & Calibration -->
                     <div class="col-lg-4">
-                        <!-- Ustawienia detekcji -->
-                        <div class="card p-3 mb-3">
-                            <h5 class="fw-bold mb-3"><i class="bi bi-sliders me-1"></i> Kontrola parametrów</h5>
+                        <!-- Panel 1: Vision & Camera Settings -->
+                        <div class="glass-card p-3 mb-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="fw-bold mb-0 text-white">
+                                    <i class="bi bi-sliders text-info me-2"></i> Detection & Camera Settings
+                                </h6>
+                                <span class="badge bg-dark border border-secondary text-secondary small">Vision</span>
+                            </div>
 
-                            <!-- Wybór źródła kamery -->
+                            <!-- Camera Source Selection -->
                             <div class="mb-3">
-                                <label class="form-label small text-secondary">Źródło wideo:</label>
-                                <select class="form-select form-select-sm bg-dark text-white border-secondary" id="cameraSourceSelect" onchange="updateCameraSource(this.value)">
-                                    <option value="0">Kamera fizyczna (Index 0)</option>
-                                    <option value="1">Kamera fizyczna (Index 1)</option>
-                                    <option value="simulation" selected>Symulacja (Zdjęcie łąki / bez USB)</option>
+                                <label class="form-label small text-secondary mb-1">Video source / sensor:</label>
+                                <select class="form-select form-select-sm" id="cameraSourceSelect" onchange="updateCameraSource(this.value)">
+                                    <option value="realsense" {% if camera_mode == 'realsense' %}selected{% endif %}>
+                                        🎯 Intel RealSense D405 (RGB-D + Depth measurement)
+                                    </option>
+                                    <option value="0" {% if camera_mode == 'camera_0' %}selected{% endif %}>USB Camera (Index 0)</option>
+                                    <option value="1" {% if camera_mode == 'camera_1' %}selected{% endif %}>USB Camera (Index 1)</option>
+                                    <option value="simulation" {% if camera_mode == 'simulation' %}selected{% endif %}>Simulation (Static meadow field photo)</option>
                                 </select>
+                                {% if realsense_name %}
+                                <div class="small text-success mt-1" style="font-size: 0.75rem;">
+                                    <i class="bi bi-check-circle-fill me-1"></i> Hardware detected: {{ realsense_name }}
+                                </div>
+                                {% endif %}
                             </div>
 
-                            <!-- Suwak Confidence -->
+                            <!-- Capture Resolution & YOLO imgsz -->
+                            <div class="row g-2 mb-3">
+                                <div class="col-6">
+                                    <label class="form-label small text-secondary mb-1">Sensor resolution:</label>
+                                    <select class="form-select form-select-sm" id="cameraResolutionSelect" onchange="updateCameraResolution(this.value)">
+                                        <option value="1080p" {% if camera_resolution == '1080p' %}selected{% endif %}>1080p (Full HD)</option>
+                                        <option value="720p" {% if camera_resolution == '720p' %}selected{% endif %}>720p (HD)</option>
+                                        <option value="4k" {% if camera_resolution == '4k' %}selected{% endif %}>4K Ultra HD</option>
+                                        <option value="640p" {% if camera_resolution == '640p' %}selected{% endif %}>640x480</option>
+                                    </select>
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label small text-secondary mb-1">Inference (imgsz):</label>
+                                    <select class="form-select form-select-sm" id="inferenceImgszSelect" onchange="updateInferenceImgsz(this.value)">
+                                        <option value="640" {% if inference_imgsz == 640 %}selected{% endif %}>640 px (Fast)</option>
+                                        <option value="1080" {% if inference_imgsz == 1080 %}selected{% endif %}>1080 px (Accurate)</option>
+                                        <option value="1280" {% if inference_imgsz == 1280 %}selected{% endif %}>1280 px (Max)</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- Confidence Threshold Slider -->
                             <div class="mb-3">
-                                <label for="confSlider" class="form-label d-flex justify-content-between small">
-                                    <span>Próg ufności (Confidence):</span>
-                                    <strong class="text-info" id="confDisplay">{{ conf_default }}</strong>
-                                </label>
-                                <input type="range" class="form-range" id="confSlider" min="0.10" max="0.90" step="0.05" value="{{ conf_default }}" oninput="onConfigChange()">
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <span class="small text-secondary">Confidence threshold:</span>
+                                    <strong class="text-info font-monospace small" id="confDisplay">{{ conf_default }}</strong>
+                                </div>
+                                <input type="range" class="form-range" id="confSlider" min="0.01" max="0.90" step="0.01" value="{{ conf_default }}" oninput="onConfigChange()">
                             </div>
 
-                            <!-- Suwak IoU -->
-                            <div class="mb-2">
-                                <label for="iouSlider" class="form-label d-flex justify-content-between small">
-                                    <span>Próg NMS (IoU):</span>
-                                    <strong class="text-info" id="iouDisplay">{{ iou_default }}</strong>
-                                </label>
+                            <!-- IoU NMS Threshold Slider -->
+                            <div class="mb-1">
+                                <div class="d-flex justify-content-between align-items-center mb-1">
+                                    <span class="small text-secondary">NMS threshold (IoU overlap):</span>
+                                    <strong class="text-info font-monospace small" id="iouDisplay">{{ iou_default }}</strong>
+                                </div>
                                 <input type="range" class="form-range" id="iouSlider" min="0.10" max="0.80" step="0.05" value="{{ iou_default }}" oninput="onConfigChange()">
                             </div>
                         </div>
 
-                        <!-- Legenda kolorów masek Opcji C -->
-                        <div class="card p-3 mb-3">
-                            <h6 class="fw-bold mb-2"><i class="bi bi-palette me-1"></i> Legenda masek organów</h6>
-                            <div class="d-flex flex-wrap gap-2 small">
-                                <span class="badge organ-badge-flower px-2 py-1">Kwiat (Yellow)</span>
-                                <span class="badge organ-badge-leaf px-2 py-1">Liść (Green)</span>
-                                <span class="badge organ-badge-stem px-2 py-1">Łodyga (Brown)</span>
-                                <span class="badge bg-danger px-2 py-1">Starzec (Ragwort box)</span>
+                        <!-- Panel 2: Camera Calibration & Illumination (RealSense D405) -->
+                        <div class="glass-card p-3 mb-3 border-info border-opacity-25">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="fw-bold mb-0 text-info">
+                                    <i class="bi bi-sun-fill me-1"></i> Illumination Calibration (D405)
+                                </h6>
+                                <span class="badge bg-secondary small" id="cameraDevBadge">RealSense D405</span>
+                            </div>
+                            <small class="text-secondary d-block mb-3" style="font-size: 0.78rem;">
+                                Hardware ISP register control & shadow invariance on meadows.
+                            </small>
+
+                            <!-- Field Lighting Presets -->
+                            <div class="mb-3">
+                                <label class="small text-secondary mb-1">Field presets:</label>
+                                <div class="btn-group btn-group-sm w-100" role="group">
+                                    <button type="button" class="btn btn-outline-warning" onclick="applyCameraPreset('sun')">☀️ Direct Sun</button>
+                                    <button type="button" class="btn btn-outline-primary" onclick="applyCameraPreset('cloud')">☁️ Cloud / Shadow</button>
+                                    <button type="button" class="btn btn-outline-success" onclick="applyCameraPreset('invariant')">🛡️ Invariant LAB</button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="applyCameraPreset('reset')">🔄 Default</button>
+                                </div>
+                            </div>
+
+                            <!-- LAB-CLAHE Toggle -->
+                            <div class="form-check form-switch p-2 bg-dark bg-opacity-50 rounded border border-secondary border-opacity-25 mb-3">
+                                <input class="form-check-input ms-0 me-2" type="checkbox" id="claheToggle" onchange="onCameraSettingChange()">
+                                <label class="form-check-label small fw-bold text-white" for="claheToggle">
+                                    Shadow & Overexposure Stabilization (LAB-CLAHE)
+                                </label>
+                                <div class="text-secondary mt-1" style="font-size: 0.72rem;">
+                                    Equalizes luminance in harsh sunlight without distorting natural flower colors.
+                                </div>
+                            </div>
+
+                            <!-- Exposure & White Balance -->
+                            <div class="row g-2 mb-2">
+                                <div class="col-6">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="small text-secondary" style="font-size: 0.75rem;">Exposure:</span>
+                                        <div class="form-check form-check-inline mb-0">
+                                            <input class="form-check-input" type="checkbox" id="autoExposureCheck" checked onchange="toggleAutoExposure(this.checked)">
+                                            <label class="form-check-label small text-info" for="autoExposureCheck" style="font-size: 0.7rem;">Auto</label>
+                                        </div>
+                                    </div>
+                                    <input type="range" class="form-range" id="exposureSlider" min="500" max="66000" step="500" value="33000" oninput="onExposureInput(this.value)" disabled>
+                                    <div class="text-end small text-secondary font-monospace" id="exposureVal" style="font-size: 0.7rem;">Auto</div>
+                                </div>
+
+                                <div class="col-6">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="small text-secondary" style="font-size: 0.75rem;">White balance:</span>
+                                        <div class="form-check form-check-inline mb-0">
+                                            <input class="form-check-input" type="checkbox" id="autoWbCheck" checked onchange="toggleAutoWb(this.checked)">
+                                            <label class="form-check-label small text-info" for="autoWbCheck" style="font-size: 0.7rem;">Auto</label>
+                                        </div>
+                                    </div>
+                                    <input type="range" class="form-range" id="wbSlider" min="2800" max="6500" step="50" value="4600" oninput="onWbInput(this.value)" disabled>
+                                    <div class="text-end small text-secondary font-monospace" id="wbVal" style="font-size: 0.7rem;">Auto</div>
+                                </div>
+                            </div>
+
+                            <!-- Contrast & Brightness -->
+                            <div class="row g-2 mb-1">
+                                <div class="col-6">
+                                    <div class="d-flex justify-content-between small text-secondary mb-1">
+                                        <span style="font-size: 0.75rem;">Contrast:</span>
+                                        <strong class="text-info font-monospace small" id="contrastVal">50</strong>
+                                    </div>
+                                    <input type="range" class="form-range" id="contrastSlider" min="0" max="100" step="1" value="50" oninput="onCameraParamChange('contrast', this.value, 'contrastVal')">
+                                </div>
+                                <div class="col-6">
+                                    <div class="d-flex justify-content-between small text-secondary mb-1">
+                                        <span style="font-size: 0.75rem;">Brightness:</span>
+                                        <strong class="text-info font-monospace small" id="brightnessVal">0</strong>
+                                    </div>
+                                    <input type="range" class="form-range" id="brightnessSlider" min="-64" max="64" step="1" value="0" oninput="onCameraParamChange('brightness', this.value, 'brightnessVal')">
+                                </div>
                             </div>
                         </div>
 
-                        <!-- Tabela celownika robota Hege -->
-                        <div class="card p-3">
-                            <h6 class="fw-bold mb-2"><i class="bi bi-crosshair me-1"></i> Koordynaty robota Hege</h6>
-                            <div class="table-responsive" style="max-height: 250px; overflow-y: auto;">
+                        <!-- Panel 3: Hege Robot Target Coordinates & Legend -->
+                        <div class="glass-card p-3">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="fw-bold mb-0 text-white">
+                                    <i class="bi bi-crosshair text-warning me-1"></i> Hege Robot Coordinates
+                                </h6>
+                                <div class="d-flex gap-1">
+                                    <span class="organ-pill organ-flower">Flower</span>
+                                    <span class="organ-pill organ-leaf">Leaf</span>
+                                    <span class="organ-pill organ-stem">Stem</span>
+                                    <span class="organ-pill organ-ragwort">Ragwort</span>
+                                </div>
+                            </div>
+
+                            <div class="table-responsive" style="max-height: 220px; overflow-y: auto;">
                                 <table class="table table-dark table-sm table-striped text-center align-middle mb-0 small">
                                     <thead>
-                                        <tr>
+                                        <tr class="text-secondary" style="font-size: 0.75rem;">
                                             <th>#</th>
-                                            <th>Organ</th>
-                                            <th>Pewność</th>
-                                            <th>Środek (X, Y)</th>
+                                            <th>Class</th>
+                                            <th>Confidence</th>
+                                            <th>Center (X, Y)</th>
+                                            <th>D405 Distance</th>
                                         </tr>
                                     </thead>
                                     <tbody id="telemetryBody">
-                                        <tr><td colspan="4" class="text-secondary">Oczekiwanie na detekcję...</td></tr>
+                                        <tr><td colspan="5" class="text-secondary py-3">Awaiting object detections...</td></tr>
                                     </tbody>
                                 </table>
                             </div>
@@ -248,124 +669,159 @@
                 </div>
             </div>
 
-            <!-- ZAKŁADKA 2: PRZETWARZANIE POJEDYNCZYCH ZDJĘĆ -->
+            <!-- TAB 2: IMAGE PROCESSING & FIELD SAMPLES -->
             <div class="tab-pane fade" id="image-pane">
                 <div class="row g-4">
+                    <!-- Left Column: Upload & Field Test Samples -->
                     <div class="col-lg-5">
-                        <div class="card p-4">
-                            <h5 class="fw-bold mb-3"><i class="bi bi-upload me-2"></i> Wgraj zdjęcie do analizy</h5>
+                        <div class="glass-card p-4 mb-4">
+                            <h5 class="fw-bold mb-2 text-white">
+                                <i class="bi bi-upload text-info me-2"></i> Test on Images
+                            </h5>
                             <p class="text-secondary small mb-3">
-                                Możesz wgrać zdjęcie liści, kwiatów lub fragmentu łąki z dysku, aby przetestować rozpoznawanie w Opcji C.
+                                Upload any field photo from your drive or pick one of the verified meadow samples below.
                             </p>
 
+                            <!-- Upload Input -->
                             <div class="mb-3">
-                                <input class="form-control bg-dark text-white border-secondary" type="file" id="imageInput" accept="image/*">
+                                <input class="form-control" type="file" id="imageInput" accept="image/*">
                             </div>
 
-                            <button class="btn btn-primary w-100 fw-bold" onclick="processUploadedImage()">
-                                <i class="bi bi-lightning-charge me-1"></i> Przetwórz zdjęcie w Pipeline C
+                            <button class="btn btn-primary w-100 fw-bold py-2 mb-4" onclick="processUploadedImage()">
+                                <i class="bi bi-lightning-charge me-1"></i> Run Active Model on Image
                             </button>
 
-                            <hr class="border-secondary my-4">
+                            <!-- Quick 1-Click Field Samples -->
+                            <h6 class="fw-bold text-white mb-2" style="font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase;">
+                                <i class="bi bi-collection-play text-warning me-1"></i> Field Test Samples (1-Click test):
+                            </h6>
+                            <div class="d-flex flex-column gap-2 mb-4" id="sampleImagesList">
+                                <div class="text-secondary small">Loading samples...</div>
+                            </div>
 
-                            <!-- Podsumowanie biometryczne -->
-                            <h6 class="fw-bold mb-2">Raport biometryczny Opcji C:</h6>
-                            <div id="imageReportCard" class="p-3 rounded bg-dark border border-secondary small text-secondary">
-                                Wybierz zdjęcie i kliknij przycisk powyżej, aby zobaczyć analizę.
+                            <hr class="border-secondary border-opacity-25 my-3">
+
+                            <!-- Biometric Report Summary -->
+                            <h6 class="fw-bold text-white mb-2" style="font-size: 0.85rem; letter-spacing: 0.05em; text-transform: uppercase;">
+                                <i class="bi bi-file-earmark-medical text-success me-1"></i> Option C / DEIM Biometric Report:
+                            </h6>
+                            <div id="imageReportCard" class="p-3 rounded bg-dark bg-opacity-75 border border-secondary border-opacity-50 small text-secondary">
+                                Select an image and click the button above or a test sample to view detailed organ biometrics.
                             </div>
                         </div>
                     </div>
 
+                    <!-- Right Column: Processed Image Display -->
                     <div class="col-lg-7">
-                        <div class="card p-3">
-                            <h5 class="fw-bold mb-3"><i class="bi bi-eye me-2"></i> Wynik segmentacji i rozpoznania</h5>
-                            <div id="imageResultContainer" class="text-center p-4 border border-secondary rounded bg-dark" style="min-height: 400px;">
-                                <span class="text-secondary">Tutaj pojawi się przetworzony obraz z nałożonymi maskami.</span>
+                        <div class="glass-card p-4">
+                            <div class="d-flex justify-content-between align-items-center mb-3">
+                                <h5 class="fw-bold mb-0 text-white">
+                                    <i class="bi bi-eye text-info me-2"></i> Visualization & Segmentation Result
+                                </h5>
+                                <span id="imageProcessedBadge" class="badge bg-secondary small">Awaiting input</span>
+                            </div>
+
+                            <div id="imageResultContainer" class="text-center p-4 border border-secondary border-opacity-50 rounded-3 bg-black bg-opacity-50 d-flex flex-column align-items-center justify-content-center" style="min-height: 480px;">
+                                <i class="bi bi-image text-secondary display-4 mb-2"></i>
+                                <span class="text-secondary">Select a sample or upload a file to view organ segmentation and weed detection.</span>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            <!-- ZAKŁADKA 3: TRENING NA INNYM KOMPUTERZE (TRAINING HUB) -->
+            <!-- TAB 3: TRAINING HUB (GPU / COLAB) -->
             <div class="tab-pane fade" id="train-pane">
                 <div class="row g-4">
                     <div class="col-lg-6">
-                        <div class="card p-4">
-                            <h5 class="fw-bold mb-2"><i class="bi bi-terminal me-2"></i> Generator komendy treningowej</h5>
+                        <div class="glass-card p-4">
+                            <h5 class="fw-bold mb-2 text-white">
+                                <i class="bi bi-terminal text-warning me-2"></i> Training Command Generator
+                            </h5>
                             <p class="text-secondary small mb-3">
-                                Skonfiguruj parametry, wygeneruj gotową komendę i uruchom ją na komputerze z GPU lub w Google Colab.
+                                Generate ready-to-run commands for external GPU machines or Google Colab for YOLO or DEIM.
                             </p>
 
                             <div class="row g-3 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label small text-secondary">Model bazowy:</label>
-                                    <select class="form-select form-select-sm bg-dark text-white border-secondary" id="trainModelSelect">
-                                        <option value="yolov8n-seg.pt" selected>yolov8n-seg.pt (Szybki, zalecany)</option>
-                                        <option value="yolov8s-seg.pt">yolov8s-seg.pt (Dokładniejszy)</option>
-                                        <option value="yolo11n-seg.pt">yolo11n-seg.pt (YOLO11 nano)</option>
-                                        <option value="yolo11s-seg.pt">yolo11s-seg.pt (YOLO11 small)</option>
+                                    <label class="form-label small text-secondary mb-1">Architecture & Base Model:</label>
+                                    <select class="form-select form-select-sm" id="trainModelSelect" onchange="generateTrainingCommands()">
+                                        <option value="yolov8n-seg.pt" selected>YOLOv8n-seg.pt (Fast, Segmentation)</option>
+                                        <option value="yolov8s-seg.pt">YOLOv8s-seg.pt (Accurate, Option C Segmentation)</option>
+                                        <option value="yolov8s.pt">YOLOv8s.pt (Bounding Box Detection)</option>
+                                        <option value="deimv2_dinov3">DEIMv2 + DINOv3 (Fine-tuning Transformer)</option>
                                     </select>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label small text-secondary">Liczba epok:</label>
-                                    <input type="number" class="form-control form-control-sm bg-dark text-white border-secondary" id="trainEpochs" value="50">
+                                    <label class="form-label small text-secondary mb-1">Epochs:</label>
+                                    <input type="number" class="form-control form-control-sm" id="trainEpochs" value="50" onchange="generateTrainingCommands()">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label small text-secondary">Rozmiar batcha:</label>
-                                    <input type="number" class="form-control form-control-sm bg-dark text-white border-secondary" id="trainBatch" value="8">
+                                    <label class="form-label small text-secondary mb-1">Batch size:</label>
+                                    <input type="number" class="form-control form-control-sm" id="trainBatch" value="8" onchange="generateTrainingCommands()">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label small text-secondary">Rozdzielczość (imgsz):</label>
-                                    <select class="form-select form-select-sm bg-dark text-white border-secondary" id="trainImgsz">
-                                        <option value="640" selected>640 px (Optymalny)</option>
-                                        <option value="1024">1024 px (Wysoka szczegółowość organów)</option>
+                                    <label class="form-label small text-secondary mb-1">Resolution (imgsz):</label>
+                                    <select class="form-select form-select-sm" id="trainImgsz" onchange="generateTrainingCommands()">
+                                        <option value="640" selected>640 px (Optimal tradeoff)</option>
+                                        <option value="1024">1024 px (High organ detail)</option>
                                     </select>
                                 </div>
                             </div>
 
-                            <button class="btn btn-outline-info w-100 fw-bold mb-3" onclick="generateTrainingCommands()">
-                                <i class="bi bi-gear-wide-connected me-1"></i> Wygeneruj komendy
+                            <button class="btn btn-outline-info w-100 fw-bold mb-3 py-2" onclick="generateTrainingCommands()">
+                                <i class="bi bi-gear-wide-connected me-1"></i> Refresh Commands
                             </button>
 
-                            <label class="small text-secondary fw-bold mb-1">Polecenie terminala (Windows / Linux):</label>
+                            <label class="small text-secondary fw-bold mb-1">Terminal Command (Windows PowerShell / Linux):</label>
                             <div class="position-relative mb-3">
                                 <div class="code-box" id="shellCommandBox">python scripts/train_segmentation.py --model yolov8n-seg.pt --data data/ragwort_parts.yaml --epochs 50 --batch 8 --imgsz 640</div>
-                                <button class="btn btn-sm btn-secondary position-absolute top-0 end-0 m-2" onclick="copyToClipboard('shellCommandBox')">Kopiuj</button>
+                                <button class="btn btn-sm btn-outline-secondary position-absolute top-0 end-0 m-2" onclick="copyToClipboard('shellCommandBox')">
+                                    <i class="bi bi-clipboard me-1"></i> Copy
+                                </button>
                             </div>
 
-                            <label class="small text-secondary fw-bold mb-1">Skrypt dla Google Colab (GPU):</label>
+                            <label class="small text-secondary fw-bold mb-1">Google Colab Script (Free T4 GPU):</label>
                             <div class="position-relative">
-                                <div class="code-box" id="colabCommandBox"># Kliknij 'Wygeneruj komendy' powyżej</div>
-                                <button class="btn btn-sm btn-secondary position-absolute top-0 end-0 m-2" onclick="copyToClipboard('colabCommandBox')">Kopiuj</button>
+                                <div class="code-box" id="colabCommandBox"># Generating script...</div>
+                                <button class="btn btn-sm btn-outline-secondary position-absolute top-0 end-0 m-2" onclick="copyToClipboard('colabCommandBox')">
+                                    <i class="bi bi-clipboard me-1"></i> Copy
+                                </button>
                             </div>
                         </div>
                     </div>
 
-                    <!-- Checklist co przenieść na drugi komputer -->
+                    <!-- Weights Transfer Instruction Card -->
                     <div class="col-lg-6">
-                        <div class="card p-4">
-                            <h5 class="fw-bold mb-3"><i class="bi bi-box-seam me-2"></i> Co przenieść na drugi komputer?</h5>
-                            <div class="list-group list-group-flush bg-transparent small">
-                                <div class="list-group-item bg-transparent text-white border-secondary px-0">
-                                    <strong class="text-info">1. Katalog <code>data/ragwort_parts/</code></strong>: Zdjęcia oraz etykiety z poligonami (format YOLO segmentacji: <code>klasa x1 y1 x2 y2...</code>).
+                        <div class="glass-card p-4">
+                            <h5 class="fw-bold mb-3 text-white">
+                                <i class="bi bi-cloud-arrow-down text-success me-2"></i> How to Transfer & Deploy Trained Weights?
+                            </h5>
+
+                            <div class="list-group list-group-flush bg-transparent small mb-4">
+                                <div class="list-group-item bg-transparent text-white border-secondary border-opacity-25 px-0 py-2">
+                                    <span class="badge bg-primary me-2">1</span>
+                                    <strong>Download the weights file</strong> after training completes: <code>runs/.../weights/best.pt</code>.
                                 </div>
-                                <div class="list-group-item bg-transparent text-white border-secondary px-0">
-                                    <strong class="text-info">2. Konfiguracja <code>data/ragwort_parts.yaml</code></strong>: Plik z nazwami klas (flower, leaf, stem).
+                                <div class="list-group-item bg-transparent text-white border-secondary border-opacity-25 px-0 py-2">
+                                    <span class="badge bg-primary me-2">2</span>
+                                    <strong>Copy it into the folder:</strong> <code>models/</code> or <code>weights/</code> in the project directory.
                                 </div>
-                                <div class="list-group-item bg-transparent text-white border-secondary px-0">
-                                    <strong class="text-info">3. Skrypt treningowy</strong>: <code>scripts/train_segmentation.py</code> oraz folder <code>src/</code>.
-                                </div>
-                                <div class="list-group-item bg-transparent text-white border-secondary px-0">
-                                    <strong class="text-info">4. Zależności</strong>: <code>pip install -r requirements/requirementsYOLO.txt</code>.
+                                <div class="list-group-item bg-transparent text-white border-secondary border-opacity-25 px-0 py-2">
+                                    <span class="badge bg-primary me-2">3</span>
+                                    <strong>Select the model on the top bar:</strong> The system automatically discovers the new weight file and switches the vision pipeline!
                                 </div>
                             </div>
 
-                            <div class="alert alert-success mt-4 mb-0 small">
-                                <h6 class="fw-bold"><i class="bi bi-check-circle me-1"></i> Jak wgrać wagi po treningu do tej aplikacji?</h6>
-                                <p class="mb-1">Po zakończeniu treningu skrypt zapisze najlepszy model w:</p>
-                                <code>models/ragwort_segmentation_best.pt</code>
-                                <p class="mt-2 mb-0">Skopiuj ten plik do folderu <code>models/</code> na tym komputerze i wybierz go z listy rozwijanej u góry!</p>
+                            <div class="p-3 rounded-3 bg-dark bg-opacity-75 border border-success border-opacity-40">
+                                <div class="d-flex align-items-center gap-2 mb-2 text-success fw-bold">
+                                    <i class="bi bi-check-circle-fill"></i>
+                                    <span>Architecture Compatibility</span>
+                                </div>
+                                <p class="text-secondary small mb-0">
+                                    The application automatically identifies whether the loaded file is an <strong>Option C organ segmentation model</strong>, 
+                                    <strong>YOLOv8 full-plant detection model</strong>, or <strong>Vision Transformer DEIMv2 + DINOv3</strong>.
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -375,38 +831,166 @@
         </div>
     </div>
 
+    <!-- Floating Toast Notifications -->
+    <div class="toast-container position-fixed bottom-0 end-0 p-3">
+        <div id="appToast" class="toast custom-toast align-items-center" role="alert" aria-live="assertive" aria-atomic="true">
+            <div class="d-flex">
+                <div class="toast-body d-flex align-items-center gap-2">
+                    <i class="bi bi-info-circle-fill text-info fs-5" id="toastIcon"></i>
+                    <span id="toastMessage">System notification</span>
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+        </div>
+    </div>
+
     <!-- Bootstrap 5 JS -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 
     <script>
+        // Global Application State
+        let appState = {
+            activeFamily: '{{ model_family }}' || 'yolo',
+            activeModel: '{{ model_name }}',
+            allModels: [],
+            families: { yolo: [], deim: [] },
+            isPaused: false
+        };
+
         // -------------------------------------------------------------
-        // Ładowanie listy modeli i obsługa przełączania wag
+        // Toast Notifications
+        // -------------------------------------------------------------
+        function showToast(message, iconClass = 'bi-info-circle-fill text-info') {
+            const toastEl = document.getElementById('appToast');
+            document.getElementById('toastMessage').textContent = message;
+            document.getElementById('toastIcon').className = `bi ${iconClass} fs-5`;
+            const toast = new bootstrap.Toast(toastEl, { delay: 3500 });
+            toast.show();
+        }
+
+        // -------------------------------------------------------------
+        // Load Models List & Handle Family Selection (YOLO vs DEIM)
         // -------------------------------------------------------------
         async function loadModelsList() {
             try {
                 const res = await fetch('/api/models');
                 const data = await res.json();
-                const select = document.getElementById('modelSelect');
-                select.innerHTML = '';
+                
+                appState.activeModel = data.active_model;
+                appState.activeFamily = data.active_family || 'yolo';
+                appState.allModels = data.models || [];
+                appState.families = data.families || { yolo: [], deim: [] };
 
-                data.models.forEach(m => {
+                updateFamilyButtonsUI(appState.activeFamily);
+                renderWeightsDropdown(appState.activeFamily);
+                updateBadgeUI(data.model_type, data.is_segmentation, data.active_family);
+            } catch (err) {
+                console.error("Error loading models:", err);
+            }
+        }
+
+        function updateFamilyButtonsUI(family) {
+            const btnYolo = document.getElementById('btnFamilyYolo');
+            const btnDeim = document.getElementById('btnFamilyDeim');
+
+            if (family === 'deim') {
+                btnDeim.className = 'family-btn active-deim';
+                btnYolo.className = 'family-btn';
+            } else {
+                btnYolo.className = 'family-btn active-yolo';
+                btnDeim.className = 'family-btn';
+            }
+        }
+
+        function renderWeightsDropdown(family) {
+            const select = document.getElementById('modelSelect');
+            select.innerHTML = '';
+
+            const list = (family === 'deim') ? appState.families.deim : appState.families.yolo;
+
+            if (!list || list.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = `No weights found for ${family.toUpperCase()}`;
+                select.appendChild(opt);
+                return;
+            }
+
+            // Grouping for YOLO (Segmentation vs Detection)
+            if (family === 'yolo') {
+                const grpSeg = document.createElement('optgroup');
+                grpSeg.label = '🌿 Organ Segmentation (Option C)';
+                const grpDet = document.createElement('optgroup');
+                grpDet.label = '🎯 Weed Detection (Bounding Box)';
+
+                list.forEach(m => {
                     const opt = document.createElement('option');
                     opt.value = m.name;
-                    opt.textContent = `${m.name} (${m.type}, ${m.size_mb} MB)`;
-                    if (m.name === data.active_model) {
+                    const rec = m.recommended ? ' ⭐' : '';
+                    opt.textContent = `${m.name} (${m.size_mb} MB)${rec}`;
+                    if (m.name === appState.activeModel) {
+                        opt.selected = true;
+                    }
+
+                    if (m.type === 'segment') {
+                        grpSeg.appendChild(opt);
+                    } else {
+                        grpDet.appendChild(opt);
+                    }
+                });
+
+                if (grpSeg.children.length > 0) select.appendChild(grpSeg);
+                if (grpDet.children.length > 0) select.appendChild(grpDet);
+            } else {
+                // For DEIM
+                list.forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.name;
+                    const rec = m.recommended ? ' ⭐' : '';
+                    const extTag = m.name.toLowerCase().endsWith('.pth') ? ' [.pth Checkpoint]' : '';
+                    opt.textContent = `${m.name} [Transformer - ${m.size_mb} MB]${extTag}${rec}`;
+                    if (m.name === appState.activeModel) {
                         opt.selected = true;
                     }
                     select.appendChild(opt);
                 });
+            }
+        }
 
-                document.getElementById('modelTypeBadge').textContent = data.is_segmentation ? 'Opcja C (Segmentacja)' : 'Detekcja (BBoxes)';
-                document.getElementById('modelTypeBadge').className = data.is_segmentation ? 'badge bg-success py-2 px-3' : 'badge bg-warning text-dark py-2 px-3';
+        async function selectModelFamily(targetFamily) {
+            if (appState.activeFamily === targetFamily) {
+                return; // Already active
+            }
+
+            updateFamilyButtonsUI(targetFamily);
+            showToast(`Switching architecture to: ${targetFamily.toUpperCase()}...`, 'bi-arrow-repeat text-warning');
+
+            try {
+                const res = await fetch('/api/models/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ family: targetFamily })
+                });
+                const data = await res.json();
+
+                if (data.status === 'success') {
+                    appState.activeFamily = data.active_family;
+                    appState.activeModel = data.active_model;
+                    loadModelsList();
+                    showToast(`Active engine: ${data.model_type} (${data.active_model})`, 'bi-check-circle-fill text-success');
+                } else {
+                    showToast(`Switch error: ${data.message || 'Unknown error'}`, 'bi-exclamation-triangle-fill text-danger');
+                }
             } catch (err) {
-                console.error("Błąd ładowania modeli:", err);
+                console.error("Error changing family:", err);
+                showToast("Server communication error!", 'bi-exclamation-triangle-fill text-danger');
             }
         }
 
         async function switchModel(modelName) {
+            if (!modelName) return;
+            showToast(`Loading weights: ${modelName}...`, 'bi-hourglass-split text-info');
+
             try {
                 const res = await fetch('/api/models/switch', {
                     method: 'POST',
@@ -415,15 +999,54 @@
                 });
                 const data = await res.json();
                 if (data.status === 'success') {
+                    appState.activeModel = data.active_model;
+                    appState.activeFamily = data.active_family;
                     loadModelsList();
+                    showToast(`Loaded model: ${data.active_model}`, 'bi-check-circle-fill text-success');
+                } else {
+                    showToast(`Load error: ${data.message}`, 'bi-exclamation-triangle-fill text-danger');
                 }
             } catch (err) {
-                console.error("Błąd przełączania modelu:", err);
+                console.error("Error switching model:", err);
+            }
+        }
+
+        function updateBadgeUI(modelType, isSegmentation, family) {
+            const badge = document.getElementById('modelTypeBadge');
+            const hudBadge = document.getElementById('hudModelBadge');
+
+            if (family === 'deim' || (modelType && modelType.includes('DEIM'))) {
+                badge.innerHTML = '<i class="bi bi-diagram-3-fill me-1"></i> DEIMv2 + DINOv3 (Transformer)';
+                badge.style.background = 'rgba(168, 85, 247, 0.2)';
+                badge.style.borderColor = 'rgba(168, 85, 247, 0.5)';
+                badge.style.color = '#d8b4fe';
+                if (hudBadge) {
+                    hudBadge.innerHTML = '<i class="bi bi-diagram-3-fill me-1"></i> DEIMv2 DINOv3';
+                    hudBadge.className = 'badge bg-dark bg-opacity-75 border border-purple text-purple small';
+                }
+            } else if (isSegmentation) {
+                badge.innerHTML = '<i class="bi bi-flower1 me-1"></i> Option C (Organ Segmentation)';
+                badge.style.background = 'rgba(16, 185, 129, 0.2)';
+                badge.style.borderColor = 'rgba(16, 185, 129, 0.5)';
+                badge.style.color = '#34d399';
+                if (hudBadge) {
+                    hudBadge.innerHTML = '<i class="bi bi-flower1 me-1"></i> YOLOv8 Seg (Option C)';
+                    hudBadge.className = 'badge bg-dark bg-opacity-75 border border-success text-success small';
+                }
+            } else {
+                badge.innerHTML = '<i class="bi bi-bounding-box me-1"></i> YOLOv8 Detection (BBoxes)';
+                badge.style.background = 'rgba(245, 158, 11, 0.2)';
+                badge.style.borderColor = 'rgba(245, 158, 11, 0.5)';
+                badge.style.color = '#fbbf24';
+                if (hudBadge) {
+                    hudBadge.innerHTML = '<i class="bi bi-bounding-box me-1"></i> YOLOv8 Detection';
+                    hudBadge.className = 'badge bg-dark bg-opacity-75 border border-warning text-warning small';
+                }
             }
         }
 
         // -------------------------------------------------------------
-        // Aktualizacja konfiguracji na żywo (Suwaki i Kamera)
+        // Live Configuration (Sliders & Camera)
         // -------------------------------------------------------------
         function onConfigChange() {
             const conf = parseFloat(document.getElementById('confSlider').value);
@@ -443,64 +1066,173 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ camera_mode: source })
-            });
+            }).then(() => showToast(`Camera source changed: ${source}`));
+        }
+
+        async function updateCameraResolution(res) {
+            const resLabel = res.toUpperCase();
+            const resBadge = document.getElementById('resolutionBadge');
+            const fpsResBadge = document.getElementById('fpsResolutionText');
+            if (resBadge) resBadge.textContent = `${resLabel}...`;
+            if (fpsResBadge) fpsResBadge.textContent = `${resLabel}...`;
+
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ camera_resolution: res })
+                });
+                const data = await response.json();
+                if (data.resolution) {
+                    const tag = data.camera_resolution ? ` (${data.camera_resolution.toUpperCase()})` : ` (${resLabel})`;
+                    const text = `${data.resolution}${tag}`;
+                    if (resBadge) resBadge.textContent = text;
+                    if (fpsResBadge) fpsResBadge.textContent = text;
+                }
+                showToast(`Resolution set to: ${resLabel} (${data.resolution || ''})`);
+            } catch (err) {
+                console.error("Failed to update resolution:", err);
+            }
+        }
+
+        function updateInferenceImgsz(sz) {
+            fetch('/api/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ inference_imgsz: parseInt(sz) })
+            }).then(() => showToast(`Inference size set to: ${sz} px`));
         }
 
         // -------------------------------------------------------------
-        // Pętla odpytywania telemetrii (co 500ms)
+        // Live Telemetry Loop (Poll every 500ms)
         // -------------------------------------------------------------
         setInterval(async () => {
+            if (appState.isPaused) return;
+
             try {
                 const res = await fetch('/api/telemetry');
                 const data = await res.json();
 
-                document.getElementById('fpsVal').textContent = data.fps;
+                // 1. FPS performance
+                document.getElementById('fpsVal').innerHTML = `${data.fps} <span class="fs-6 text-secondary">FPS</span>`;
+                const fpsNum = document.getElementById('fpsNumber');
+                if (fpsNum) fpsNum.textContent = data.fps;
+                const fpsResBadge = document.getElementById('fpsResolutionText');
+                if (fpsResBadge && data.resolution) {
+                    const tag = data.camera_resolution ? ` (${data.camera_resolution.toUpperCase()})` : '';
+                    fpsResBadge.textContent = `${data.resolution}${tag}`;
+                }
 
+                const shortName = document.getElementById('activeModelShortName');
+                if (shortName) shortName.textContent = `Model: ${data.model}`;
+
+                // 2. Resolution and sensor badge
+                if (data.resolution) {
+                    const resBadge = document.getElementById('resolutionBadge');
+                    if (resBadge) {
+                        const tag = data.camera_resolution ? ` (${data.camera_resolution.toUpperCase()})` : '';
+                        resBadge.textContent = `${data.resolution}${tag}`;
+                    }
+                }
+
+                const sensorBadge = document.getElementById('sensorBadge');
+                if (sensorBadge) {
+                    if (data.camera_mode === 'realsense') {
+                        sensorBadge.className = "badge bg-dark bg-opacity-75 border border-success text-success small";
+                        sensorBadge.innerHTML = `<i class="bi bi-camera-fill me-1"></i> RealSense D405 (RGB-D)`;
+                    } else if (data.camera_mode === 'simulation') {
+                        sensorBadge.className = "badge bg-dark bg-opacity-75 border border-warning text-warning small";
+                        sensorBadge.innerHTML = `<i class="bi bi-image me-1"></i> Simulation Mode`;
+                    } else {
+                        sensorBadge.className = "badge bg-dark bg-opacity-75 border border-primary text-primary small";
+                        sensorBadge.innerHTML = `<i class="bi bi-usb me-1"></i> USB (${data.camera_mode})`;
+                    }
+                }
+
+                // 3. RealSense Depth reading
+                const depthBadge = document.getElementById('depthReadingBadge');
+                let minDistance = null;
+                if (data.detections && data.detections.length > 0) {
+                    for (const d of data.detections) {
+                        if (d.distance_cm) {
+                            if (minDistance === null || d.distance_cm < minDistance) {
+                                minDistance = d.distance_cm;
+                            }
+                        }
+                    }
+                }
+                if (depthBadge) {
+                    if (minDistance !== null) {
+                        depthBadge.innerHTML = `<i class="bi bi-rulers me-1 text-warning"></i> Closest target: ${minDistance} cm`;
+                    } else if (data.has_depth) {
+                        depthBadge.innerHTML = `<i class="bi bi-check-circle me-1 text-success"></i> D405 Depth Active`;
+                    } else {
+                        depthBadge.innerHTML = `<i class="bi bi-dash-circle me-1 text-secondary"></i> Depth: --`;
+                    }
+                }
+
+                // 4. Primary Verdict Card
                 const analysis = data.analysis;
                 const verdictCard = document.getElementById('verdictCard');
                 const verdictVal = document.getElementById('verdictVal');
+                const verdictIcon = document.getElementById('verdictIcon');
+                const confidenceVal = document.getElementById('confidenceVal');
                 const stageVal = document.getElementById('stageVal');
                 const organCountsVal = document.getElementById('organCountsVal');
+                const totalPartsVal = document.getElementById('totalPartsVal');
 
                 if (analysis.is_ragwort) {
-                    verdictCard.style.borderLeftColor = '#22c55e';
-                    verdictVal.textContent = `STARZEC (${(analysis.confidence*100).toFixed(0)}%)`;
-                    verdictVal.className = 'stat-val fs-4 mt-1 text-success';
+                    verdictCard.style.borderLeftColor = 'var(--emerald-accent)';
+                    verdictVal.textContent = 'COMMON RAGWORT';
+                    verdictVal.className = 'kpi-val fs-5 text-success';
+                    verdictIcon.className = 'bi bi-shield-fill-check text-success';
+                    confidenceVal.textContent = `Confidence: ${(analysis.confidence * 100).toFixed(0)}%`;
                 } else {
-                    verdictCard.style.borderLeftColor = '#ef4444';
-                    verdictVal.textContent = 'BRAK STARCA';
-                    verdictVal.className = 'stat-val fs-4 mt-1 text-danger';
+                    verdictCard.style.borderLeftColor = 'var(--crimson-accent)';
+                    verdictVal.textContent = 'NO RAGWORT';
+                    verdictVal.className = 'kpi-val fs-5 text-danger';
+                    verdictIcon.className = 'bi bi-shield-x text-danger';
+                    confidenceVal.textContent = 'Neutral vegetation / grass';
                 }
 
                 stageVal.textContent = analysis.stage ? analysis.stage.toUpperCase() : 'UNKNOWN';
 
                 const counts = analysis.counts || {};
-                organCountsVal.textContent = `${counts.flowers || 0} kw., ${counts.leaves || 0} liści, ${counts.stems || 0} łod.`;
+                if (counts.ragwort && !counts.flowers && !counts.leaves) {
+                    organCountsVal.textContent = `${counts.ragwort} ragwort plants`;
+                    totalPartsVal.textContent = `Detector: DEIMv2 Transformer`;
+                } else {
+                    organCountsVal.textContent = `${counts.flowers || 0} fl., ${counts.leaves || 0} leaves`;
+                    totalPartsVal.textContent = `Stems: ${counts.stems || 0} | Total parts: ${counts.total_parts || 0}`;
+                }
 
-                // Tabela celownika robota Hege
+                // 5. Robot Telemetry Table
                 const telemetryBody = document.getElementById('telemetryBody');
                 if (data.detections && data.detections.length > 0) {
                     let html = '';
                     data.detections.forEach((det, idx) => {
-                        let badgeClass = 'bg-secondary';
+                        let pillClass = 'bg-secondary';
                         const nameL = det.class.toLowerCase();
-                        if (nameL.includes('flower') || nameL.includes('kwiat')) badgeClass = 'organ-badge-flower';
-                        else if (nameL.includes('leaf') || nameL.includes('lisc')) badgeClass = 'organ-badge-leaf';
-                        else if (nameL.includes('stem') || nameL.includes('lodyg')) badgeClass = 'organ-badge-stem';
-                        else if (nameL.includes('ragwort')) badgeClass = 'bg-danger';
+                        if (nameL.includes('flower') || nameL.includes('kwiat')) pillClass = 'organ-pill organ-flower';
+                        else if (nameL.includes('leaf') || nameL.includes('lisc')) pillClass = 'organ-pill organ-leaf';
+                        else if (nameL.includes('stem') || nameL.includes('lodyg')) pillClass = 'organ-pill organ-stem';
+                        else if (nameL.includes('ragwort')) pillClass = 'organ-pill organ-ragwort';
+
+                        const distStr = det.distance_cm ? `<span class="badge bg-warning text-dark font-monospace">${det.distance_cm} cm</span>` : '<span class="text-secondary">--</span>';
 
                         html += `
                             <tr>
                                 <td>${idx + 1}</td>
-                                <td><span class="badge ${badgeClass}">${det.class}</span></td>
-                                <td>${(det.confidence * 100).toFixed(0)}%</td>
-                                <td><code>[${det.center[0]}, ${det.center[1]}]</code></td>
+                                <td><span class="${pillClass}">${det.class}</span></td>
+                                <td class="font-monospace">${(det.confidence * 100).toFixed(0)}%</td>
+                                <td><code class="text-info font-monospace">[${det.center[0]}, ${det.center[1]}]</code></td>
+                                <td>${distStr}</td>
                             </tr>
                         `;
                     });
                     telemetryBody.innerHTML = html;
                 } else {
-                    telemetryBody.innerHTML = '<tr><td colspan="4" class="text-secondary">Brak obiektów w kadrze</td></tr>';
+                    telemetryBody.innerHTML = '<tr><td colspan="5" class="text-secondary py-3">No objects in current frame</td></tr>';
                 }
 
             } catch (err) {
@@ -509,12 +1241,117 @@
         }, 500);
 
         // -------------------------------------------------------------
-        // Przetwarzanie wgrywanego zdjęcia
+        // Video Controls: Snapshot, Pause, Fullscreen
         // -------------------------------------------------------------
+        function captureSnapshot() {
+            const feed = document.getElementById('liveVideoFeed');
+            const canvas = document.createElement('canvas');
+            canvas.width = feed.naturalWidth || feed.width;
+            canvas.height = feed.naturalHeight || feed.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(feed, 0, 0, canvas.width, canvas.height);
+
+            const link = document.createElement('a');
+            link.download = `ragwort_snapshot_${Date.now()}.jpg`;
+            link.href = canvas.toDataURL('image/jpeg', 0.95);
+            link.click();
+            showToast("Frame snapshot saved!", "bi-camera text-info");
+        }
+
+        function toggleStreamPause() {
+            appState.isPaused = !appState.isPaused;
+            const icon = document.getElementById('pauseBtnIcon');
+            const feed = document.getElementById('liveVideoFeed');
+
+            if (appState.isPaused) {
+                icon.className = 'bi bi-play-fill me-1';
+                showToast("Stream paused.");
+            } else {
+                icon.className = 'bi bi-pause-fill me-1';
+                feed.src = '/video_feed?t=' + Date.now();
+                showToast("Stream resumed.");
+            }
+        }
+
+        function toggleFullscreen() {
+            const elem = document.getElementById('videoWrapper');
+            if (!document.fullscreenElement) {
+                elem.requestFullscreen().catch(err => console.error(err));
+            } else {
+                document.exitFullscreen();
+            }
+        }
+
+        // -------------------------------------------------------------
+        // Field Test Samples (1-Click Test)
+        // -------------------------------------------------------------
+        async function loadSampleImages() {
+            try {
+                const res = await fetch('/api/sample_images');
+                const data = await res.json();
+                const container = document.getElementById('sampleImagesList');
+                container.innerHTML = '';
+
+                if (data.samples && data.samples.length > 0) {
+                    data.samples.forEach(s => {
+                        const div = document.createElement('div');
+                        div.className = 'sample-thumb-card d-flex justify-content-between align-items-center';
+                        div.onclick = () => processSampleImage(s.filename);
+
+                        const badge = s.is_ragwort ? '<span class="badge bg-danger small">Ragwort</span>' : '<span class="badge bg-secondary small">Negative</span>';
+
+                        div.innerHTML = `
+                            <div>
+                                <strong class="text-white small d-block">${s.title}</strong>
+                                <span class="text-secondary" style="font-size: 0.75rem;">${s.filename} (${s.size_mb} MB)</span>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                ${badge}
+                                <i class="bi bi-chevron-right text-info"></i>
+                            </div>
+                        `;
+                        container.appendChild(div);
+                    });
+                } else {
+                    container.innerHTML = '<span class="text-secondary small">No test samples found.</span>';
+                }
+            } catch (err) {
+                console.error("Error loading test samples:", err);
+            }
+        }
+
+        async function processSampleImage(filename) {
+            const container = document.getElementById('imageResultContainer');
+            const badge = document.getElementById('imageProcessedBadge');
+            badge.textContent = "Processing...";
+            badge.className = "badge bg-warning text-dark small";
+            container.innerHTML = '<div class="spinner-border text-info my-5" role="status"></div><p class="text-secondary">Analyzing sample with active AI engine...</p>';
+
+            try {
+                const res = await fetch('/api/process_sample', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: filename })
+                });
+                const data = await res.json();
+
+                if (data.status === 'success') {
+                    renderImageResult(data);
+                    showToast(`Processed sample: ${filename}`, 'bi-check-circle-fill text-success');
+                } else {
+                    container.innerHTML = `<div class="text-danger p-4">Processing error: ${data.message}</div>`;
+                    badge.textContent = "Error";
+                    badge.className = "badge bg-danger small";
+                }
+            } catch (err) {
+                container.innerHTML = `<div class="text-danger p-4">Server error: ${err}</div>`;
+            }
+        }
+
         async function processUploadedImage() {
             const input = document.getElementById('imageInput');
             if (!input.files || input.files.length === 0) {
-                alert("Wybierz plik ze zdjęciem!");
+                alert("Please select an image file from your drive!");
                 return;
             }
 
@@ -522,7 +1359,10 @@
             formData.append('image', input.files[0]);
 
             const container = document.getElementById('imageResultContainer');
-            container.innerHTML = '<div class="spinner-border text-info my-5" role="status"></div><p class="text-secondary">Przetwarzanie przez pipeline segmentacji...</p>';
+            const badge = document.getElementById('imageProcessedBadge');
+            badge.textContent = "Processing...";
+            badge.className = "badge bg-warning text-dark small";
+            container.innerHTML = '<div class="spinner-border text-info my-5" role="status"></div><p class="text-secondary">Processing image through vision pipeline...</p>';
 
             try {
                 const res = await fetch('/api/process_image', {
@@ -532,40 +1372,77 @@
                 const data = await res.json();
 
                 if (data.status === 'success') {
-                    container.innerHTML = `<img src="${data.image_base64}" class="img-fluid rounded shadow border border-secondary" style="max-height: 520px;">`;
-
-                    const a = data.analysis;
-                    const c = a.counts;
-                    const ar = a.areas;
-                    const report = document.getElementById('imageReportCard');
-                    report.innerHTML = `
-                        <div class="mb-2">
-                            <strong>Decyzja:</strong>
-                            <span class="badge ${a.is_ragwort ? 'bg-success' : 'bg-danger'} fs-6 ms-1">
-                                ${a.is_ragwort ? 'STARZEC JAKUBEK ZIDENTYFIKOWANY' : 'BRAK STARCA / INNA ROŚLINA'}
-                            </span>
-                        </div>
-                        <div class="mb-1"><strong>Pewność (Confidence):</strong> ${(a.confidence * 100).toFixed(1)}%</div>
-                        <div class="mb-1"><strong>Stadium:</strong> <span class="text-info">${a.stage}</span></div>
-                        <div class="mb-1"><strong>Liczba organów:</strong> ${c.flowers} kwiatów, ${c.leaves} liści, ${c.stems} łodyg</div>
-                        <div class="mb-0"><strong>Powierzchnia masek:</strong> Kwiaty: ${ar.flower_area_px.toFixed(0)} px², Liście: ${ar.leaf_area_px.toFixed(0)} px²</div>
-                    `;
+                    renderImageResult(data);
+                    showToast("Uploaded image analysis complete!", 'bi-check-circle-fill text-success');
                 } else {
-                    container.innerHTML = `<div class="text-danger p-4">Błąd przetwarzania: ${data.message}</div>`;
+                    container.innerHTML = `<div class="text-danger p-4">Error: ${data.message}</div>`;
                 }
             } catch (err) {
-                container.innerHTML = `<div class="text-danger p-4">Błąd serwera: ${err}</div>`;
+                container.innerHTML = `<div class="text-danger p-4">Server error: ${err}</div>`;
             }
         }
 
+        function renderImageResult(data) {
+            const container = document.getElementById('imageResultContainer');
+            const badge = document.getElementById('imageProcessedBadge');
+
+            badge.textContent = data.analysis.is_ragwort ? "Ragwort Detected" : "No Ragwort";
+            badge.className = data.analysis.is_ragwort ? "badge bg-success small" : "badge bg-danger small";
+
+            container.innerHTML = `
+                <img src="${data.image_base64}" class="img-fluid rounded-3 shadow border border-secondary" style="max-height: 520px;">
+                <div class="mt-3">
+                    <a href="${data.image_base64}" download="ragwort_result.jpg" class="btn btn-sm btn-outline-info">
+                        <i class="bi bi-download me-1"></i> Download Processed Image
+                    </a>
+                </div>
+            `;
+
+            const a = data.analysis;
+            const c = a.counts;
+            const ar = a.areas;
+            const report = document.getElementById('imageReportCard');
+
+            let partsInfo = '';
+            if (c.ragwort && !c.flowers && !c.leaves) {
+                partsInfo = `<div><strong>Detected Weeds (DEIM):</strong> ${c.ragwort} ragwort plants</div>`;
+            } else {
+                partsInfo = `
+                    <div class="mb-1"><strong>Organs:</strong> ${c.flowers} flowers, ${c.leaves} leaves, ${c.stems} stems</div>
+                    <div><strong>Mask Area:</strong> Flowers: ${ar.flower_area_px.toFixed(0)} px², Leaves: ${ar.leaf_area_px.toFixed(0)} px²</div>
+                `;
+            }
+
+            report.innerHTML = `
+                <div class="mb-2">
+                    <strong>Decision:</strong>
+                    <span class="badge ${a.is_ragwort ? 'bg-success' : 'bg-danger'} ms-1">
+                        ${a.is_ragwort ? 'COMMON RAGWORT IDENTIFIED' : 'NO RAGWORT / OTHER PLANT'}
+                    </span>
+                </div>
+                <div class="mb-1"><strong>AI Confidence:</strong> ${(a.confidence * 100).toFixed(1)}%</div>
+                <div class="mb-1"><strong>Phenological Stage:</strong> ${a.stage ? a.stage.toUpperCase() : 'UNKNOWN'}</div>
+                ${partsInfo}
+            `;
+        }
+
         // -------------------------------------------------------------
-        // Generator komend treningowych
+        // Training Command Generator
         // -------------------------------------------------------------
         async function generateTrainingCommands() {
             const model = document.getElementById('trainModelSelect').value;
             const epochs = document.getElementById('trainEpochs').value;
             const batch = document.getElementById('trainBatch').value;
             const imgsz = document.getElementById('trainImgsz').value;
+
+            if (model.includes('deim')) {
+                // Command specific for DEIMv2
+                document.getElementById('shellCommandBox').textContent = 
+                    `python -m torch.distributed.run --nproc_per_node=1 train.py --config configs/deimv2_dinov3_ragwort.yml --epochs ${epochs} --batch-size ${batch}`;
+                document.getElementById('colabCommandBox').textContent = 
+                    `# --- Train DEIMv2 + DINOv3 on Google Colab (GPU) ---\n!git clone https://github.com/YourRepo/RagwortDetection.git\n%cd RagwortDetection\n!pip install -r requirements.txt\n!python -m torch.distributed.run --nproc_per_node=1 train.py --config configs/deimv2_dinov3_ragwort.yml --epochs ${epochs}`;
+                return;
+            }
 
             const res = await fetch('/api/training/command', {
                 method: 'POST',
@@ -586,12 +1463,153 @@
         function copyToClipboard(elementId) {
             const text = document.getElementById(elementId).textContent;
             navigator.clipboard.writeText(text);
-            alert("Skopiowano polecenie do schowka!");
+            showToast("Command copied to clipboard!", "bi-clipboard-check text-success");
         }
 
-        // Inicjalizacja przy załadowaniu strony
+        // -------------------------------------------------------------
+        // Camera Calibration (RealSense D405) & Presets
+        // -------------------------------------------------------------
+        async function loadCameraSettings() {
+            try {
+                const res = await fetch('/api/camera_settings');
+                const data = await res.json();
+                if (data.status === 'success') {
+                    updateCameraControlsUI(data.settings, data.is_realsense, data.realsense_name);
+                }
+            } catch (err) {
+                console.error("Error loading camera settings:", err);
+            }
+        }
+
+        function updateCameraControlsUI(s, isRs, rsName) {
+            const devBadge = document.getElementById('cameraDevBadge');
+            if (devBadge) {
+                devBadge.textContent = isRs ? (rsName || "RealSense D405") : "USB Camera / Simulation";
+                devBadge.className = isRs ? "badge bg-info small" : "badge bg-secondary small";
+            }
+
+            const claheEl = document.getElementById('claheToggle');
+            if (claheEl) claheEl.checked = !!s.clahe_enabled;
+
+            const aeEl = document.getElementById('autoExposureCheck');
+            const expSlider = document.getElementById('exposureSlider');
+            const expVal = document.getElementById('exposureVal');
+            if (aeEl && expSlider) {
+                aeEl.checked = !!s.auto_exposure;
+                expSlider.disabled = !!s.auto_exposure;
+                expSlider.value = s.exposure || 33000;
+                expVal.textContent = s.auto_exposure ? "Auto" : (s.exposure / 1000).toFixed(1) + " ms";
+            }
+
+            const awbEl = document.getElementById('autoWbCheck');
+            const wbSlider = document.getElementById('wbSlider');
+            const wbVal = document.getElementById('wbVal');
+            if (awbEl && wbSlider) {
+                awbEl.checked = !!s.auto_white_balance;
+                wbSlider.disabled = !!s.auto_white_balance;
+                wbSlider.value = s.white_balance || 4600;
+                wbVal.textContent = s.auto_white_balance ? "Auto" : s.white_balance + " K";
+            }
+
+            const setVal = (id, val, textId, suffix = '') => {
+                const el = document.getElementById(id);
+                const txt = document.getElementById(textId);
+                if (el) el.value = val;
+                if (txt) txt.textContent = val + suffix;
+            };
+
+            setVal('contrastSlider', s.contrast ?? 50, 'contrastVal');
+            setVal('brightnessSlider', s.brightness ?? 0, 'brightnessVal');
+        }
+
+        function toggleAutoExposure(isAuto) {
+            const expSlider = document.getElementById('exposureSlider');
+            const expVal = document.getElementById('exposureVal');
+            expSlider.disabled = isAuto;
+            expVal.textContent = isAuto ? "Auto" : (expSlider.value / 1000).toFixed(1) + " ms";
+            onCameraSettingChange();
+        }
+
+        function onExposureInput(val) {
+            document.getElementById('exposureVal').textContent = (val / 1000).toFixed(1) + " ms";
+            debouncedCameraChange();
+        }
+
+        function toggleAutoWb(isAuto) {
+            const wbSlider = document.getElementById('wbSlider');
+            const wbVal = document.getElementById('wbVal');
+            wbSlider.disabled = isAuto;
+            wbVal.textContent = isAuto ? "Auto" : wbSlider.value + " K";
+            onCameraSettingChange();
+        }
+
+        function onWbInput(val) {
+            document.getElementById('wbVal').textContent = val + " K";
+            debouncedCameraChange();
+        }
+
+        function onCameraParamChange(param, val, displayId) {
+            const disp = document.getElementById(displayId);
+            if (disp) disp.textContent = val;
+            debouncedCameraChange();
+        }
+
+        let cameraChangeTimeout = null;
+        function debouncedCameraChange() {
+            clearTimeout(cameraChangeTimeout);
+            cameraChangeTimeout = setTimeout(onCameraSettingChange, 80);
+        }
+
+        async function onCameraSettingChange() {
+            const payload = {
+                clahe_enabled: document.getElementById('claheToggle').checked,
+                auto_exposure: document.getElementById('autoExposureCheck').checked,
+                exposure: parseInt(document.getElementById('exposureSlider').value),
+                auto_white_balance: document.getElementById('autoWbCheck').checked,
+                white_balance: parseInt(document.getElementById('wbSlider').value),
+                contrast: parseInt(document.getElementById('contrastSlider').value),
+                brightness: parseInt(document.getElementById('brightnessSlider').value)
+            };
+
+            try {
+                await fetch('/api/camera_settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+            } catch (err) {
+                console.error("Error saving camera settings:", err);
+            }
+        }
+
+        async function applyCameraPreset(preset) {
+            try {
+                const res = await fetch('/api/camera_settings/preset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preset: preset })
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    loadCameraSettings();
+                    const names = {
+                        sun: '☀️ Direct Sun',
+                        cloud: '☁️ Cloud / Shadow',
+                        invariant: '🛡️ Invariant LAB-CLAHE',
+                        reset: '🔄 Default'
+                    };
+                    showToast(`Applied preset: ${names[preset] || preset}`);
+                }
+            } catch (err) {
+                console.error("Error applying preset:", err);
+            }
+        }
+
+        // Initialize on page load
         window.onload = () => {
             loadModelsList();
+            loadSampleImages();
+            loadCameraSettings();
             generateTrainingCommands();
         };
     </script>

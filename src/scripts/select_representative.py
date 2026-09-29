@@ -143,6 +143,18 @@ def collect_samples(data_dir: Path, splits: Sequence[str]) -> List[Sample]:
     ragwort_ids = load_ragwort_class_ids(data_dir)
     samples: List[Sample] = []
 
+    # Sprawdzenie czy podany katalog bezposrednio zawiera zdjecia (np. data/other_images)
+    if data_dir.exists() and data_dir.is_dir():
+        direct_paths = sorted(p for p in data_dir.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES)
+        if direct_paths:
+            labels_dir = data_dir / "labels"
+            print(f"[skan] bezposredni katalog {data_dir}: {len(direct_paths)} zdjec")
+            for img in direct_paths:
+                lbl_file = labels_dir / (img.stem + ".txt") if labels_dir.exists() else None
+                lbl = label_of_image(lbl_file, ragwort_ids) if lbl_file and lbl_file.exists() else CLASS_OTHERS
+                samples.append(Sample(img, lbl))
+            return samples
+
     for split in splits:
         images_dir = data_dir / split / "images"
         labels_dir = data_dir / split / "labels"
@@ -318,11 +330,12 @@ def write_csv(rows: List[dict], csv_path: Path) -> None:
         writer.writerows(rows)
 
 
-def copy_selected(rows: List[dict], target_dir: Path) -> None:
+def copy_selected(rows: List[dict], target_dir: Path, preserve_names: bool = False) -> None:
     for row in rows:
         dest_dir = target_dir / row["label"]
         dest_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO_ROOT / row["path"], dest_dir / f"{row['pick_order']:03d}_{row['filename']}")
+        dest_name = row["filename"] if preserve_names else f"{row['pick_order']:03d}_{row['filename']}"
+        shutil.copy2(REPO_ROOT / row["path"], dest_dir / dest_name)
     print(f"[kopie] zdjecia w {target_dir}")
 
 
@@ -343,6 +356,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--recompute", action="store_true")
     parser.add_argument("--copy-images", action="store_true")
+    parser.add_argument("--copy-dir", type=Path, default=None, help="opcjonalny folder docelowy dla kopii wybranych zdjec")
+    parser.add_argument("--preserve-filenames", action="store_true", help="nie dodawaj prefiksu 001_ do nazw plikow przy kopiowaniu")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -381,7 +396,8 @@ def main() -> None:
         return
 
     suffix = f"_limit{args.limit}" if args.limit > 0 else ""
-    cache_name = f"embeddings_combined_{'_'.join(splits)}{suffix}.npz"
+    dataset_tag = args.data_dir.name.replace(" ", "_")
+    cache_name = f"embeddings_{dataset_tag}_{'_'.join(splits)}{suffix}.npz"
     embeddings, used_model = load_or_compute_embeddings(
         samples, args.output_dir / cache_name, args.batch_size, args.recompute, args.model
     )
@@ -446,8 +462,9 @@ def main() -> None:
             ensure_ascii=False,
         )
 
-    if args.copy_images:
-        copy_selected(rows, args.output_dir / "selected_images")
+    if args.copy_images or args.copy_dir is not None:
+        target_dir = args.copy_dir if args.copy_dir is not None else (args.output_dir / "selected_images")
+        copy_selected(rows, target_dir, preserve_names=args.preserve_filenames)
 
     print(f"\nGotowe. Lista do adnotacji: {csv_path}")
     print(f"Podsumowanie: {summary_path}")
